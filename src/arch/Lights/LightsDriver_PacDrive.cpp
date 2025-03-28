@@ -6,6 +6,8 @@
 
 REGISTER_LIGHTS_DRIVER_CLASS(PacDrive);
 
+static RegisterRageDriver register_LinuxPacDrive(&LightsDriver::m_pDriverList, "LinuxPacDrive", CreateClass<LightsDriver_PacDrive, RageDriver>);
+
 static Preference<RString> g_sPacDriveLightOrdering("PacDriveLightOrdering", "openitg");
 int iPacDriveLightOrder = 0;
 
