@@ -8,7 +8,12 @@
 #include "RageTimer.h"
 
 #include <vector>
-
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <atomic>
 
 extern Preference<float>	g_fLightsFalloffSeconds;
 extern Preference<float>	g_fLightsAheadSeconds;
@@ -56,6 +61,49 @@ struct LightsState
 	bool m_bCoinCounter;
 };
 
+// Define a type for light state update requests
+using LightRequest = std::function<void()>;
+
+// Thread-safe queue for light requests
+class LightRequestQueue {
+public:
+    void Push(LightRequest request) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_requestPending) {
+            // Skip adding the request if one is already pending
+            return;
+        }
+        m_queue.push(request);
+        m_requestPending = true; // Mark that a request is pending
+        m_condition.notify_one();
+    }
+
+    LightRequest Pop() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_condition.wait(lock, [this] { return !m_queue.empty() || m_stop; });
+        if (m_queue.empty()) return nullptr;
+        LightRequest request = m_queue.front();
+        m_queue.pop();
+        if (m_queue.empty()) {
+            m_requestPending = false; // Mark that no request is pending
+        }
+        return request;
+    }
+
+    void Stop() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_stop = true;
+        m_condition.notify_all();
+    }
+
+private:
+    std::queue<LightRequest> m_queue;
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    bool m_stop = false;
+    bool m_requestPending = false; // Tracks if a request is pending
+};
+
 class LightsDriver;
 /** @brief Control lights. */
 class LightsManager
@@ -85,6 +133,9 @@ public:
 	CabinetLight	GetFirstLitCabinetLight();
 	GameInput	GetFirstLitGameButtonLight();
 
+	void SetLightsState();
+    void ResetLightsState();
+
 private:
 	void ChangeTestCabinetLight( int iDir );
 	void ChangeTestGameButtonLight( int iDir );
@@ -106,6 +157,12 @@ private:
 	float			m_fTestAutoCycleCurrentIndex;
 	CabinetLight	m_clTestManualCycleCurrent;
 	int				m_iControllerTestManualCycleCurrent;
+
+	LightRequestQueue m_requestQueue;
+	std::thread m_workerThread;
+	std::atomic<bool> m_stopWorker;
+
+	void ProcessLightRequests();
 };
 
 extern LightsManager*	LIGHTSMAN;	// global and accessible from anywhere in our program
