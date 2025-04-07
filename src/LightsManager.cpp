@@ -19,7 +19,12 @@
 #include <cmath>
 #include <cstddef>
 #include <vector>
-
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <atomic>
 
 const RString DEFAULT_LIGHTS_DRIVER = "SystemMessage,Export";
 static Preference<RString> g_sLightsDriver( "LightsDriver", "" ); // "" == DEFAULT_LIGHTS_DRIVER
@@ -108,6 +113,8 @@ LightsManager*	LIGHTSMAN = nullptr;	// global and accessible from anywhere in ou
 
 LightsManager::LightsManager()
 {
+	
+
 	ZERO( m_fSecsLeftInCabinetLightBlink );
 	ZERO( m_fSecsLeftInGameButtonBlink );
 	ZERO( m_fActorLights );
@@ -122,10 +129,18 @@ LightsManager::LightsManager()
 	LightsDriver::Create( sDriver, m_vpDrivers );
 
 	SetLightsMode( LIGHTSMODE_ATTRACT );
+
+	m_stopWorker = false;
+	m_workerThread = std::thread(&LightsManager::ProcessLightRequests, this);
 }
 
 LightsManager::~LightsManager()
 {
+	m_requestQueue.Stop();
+	m_stopWorker = true;
+	if (m_workerThread.joinable()) {
+		m_workerThread.join();
+	}
 	for (LightsDriver *iter : m_vpDrivers)
 	{
 		RageUtil::SafeDelete( iter );
@@ -498,8 +513,7 @@ void LightsManager::Update( float fDeltaTime )
 	}
 
 	// apply new light values we set above
-	for (LightsDriver *iter : m_vpDrivers)
-		iter->Set( &m_LightsState );
+	SetLightsState();
 }
 
 void LightsManager::BlinkCabinetLight( CabinetLight cl )
@@ -567,6 +581,24 @@ GameInput LightsManager::GetFirstLitGameButtonLight()
 	return GameInput();
 }
 
+void LightsManager::SetLightsState() {
+	// Enqueue a request to set the lights state
+	m_requestQueue.Push([this]() {
+		for (LightsDriver* iter : m_vpDrivers) {
+			iter->Set(&m_LightsState);
+		}
+	});
+}
+
+void LightsManager::ResetLightsState() {
+	// Enqueue a request to reset the lights state
+	m_requestQueue.Push([this]() {
+		for (LightsDriver* iter : m_vpDrivers) {
+			iter->Reset();
+		}
+	});
+}
+
 bool LightsManager::IsEnabled() const
 {
 	return m_vpDrivers.size() >= 1 || PREFSMAN->m_bDebugLights;
@@ -574,8 +606,16 @@ bool LightsManager::IsEnabled() const
 
 void LightsManager::TurnOffAllLights()
 {
-	for(LightsDriver *iter : m_vpDrivers)
-		iter->Reset();
+	ResetLightsState();
+}
+
+void LightsManager::ProcessLightRequests() {
+	 while (!m_stopWorker) {
+		LightRequest request = m_requestQueue.Pop();
+		if (request) {
+			request();
+		}
+	}
 }
 
 /*
