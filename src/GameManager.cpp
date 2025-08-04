@@ -3218,10 +3218,9 @@ static const Game g_Game_Kickbox =
 static const Game *g_Games[] =
 {
 	&g_Game_Dance,
-	&g_Game_Pump,
-	&g_Game_Techno,
-	&g_Game_Lights,
-
+	// &g_Game_Pump,
+	// &g_Game_Techno,
+	// &g_Game_Lights,
 	// We don't intend to support the following game modes so comment them out.
 	// TODO(teejusb/natano): Remove the following game modes from ITGmania
 	// whenever they start hindering development.
