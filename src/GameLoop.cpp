@@ -1,5 +1,7 @@
 #include "GameLoop.h"
 
+#include "SyncStartManager.h"
+
 #include <cmath>
 #include <string>
 
@@ -267,6 +269,8 @@ void GameLoop::UpdateAllButDraw() {
   SCREENMAN->Update(fDeltaTime);
   MEMCARDMAN->Update();
 
+  SYNCMAN->Update();
+  
   /* Important: Process input AFTER updating game logic, or input will be
    * acting on song beat from last frame */
   HandleInputEvents(fDeltaTime);

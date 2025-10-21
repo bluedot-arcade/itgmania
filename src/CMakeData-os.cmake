@@ -1,3 +1,5 @@
+list(APPEND SMDATA_OS_HPP "archutils/Common/sockets.h")
+
 list(APPEND SMDATA_OS_SRC "archutils/Common/HidDevice.cpp")
 list(APPEND SMDATA_OS_HPP "archutils/Common/HidDevice.h")
 
