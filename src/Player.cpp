@@ -1,5 +1,7 @@
 #include "Player.h"
 
+#include "SyncStartManager.h"
+
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -912,6 +914,7 @@ void Player::Update(float fDeltaTime) {
   }
 
   // LOG->Trace( "Player::Update(%f)", fDeltaTime );
+  this->m_bBroadcastScoreThisUpdate = false;
 
   if (GAMESTATE->m_pCurSong == nullptr || IsOniDead()) {
     return;
@@ -1713,6 +1716,7 @@ void Player::UpdateHoldNotes(
     }
     SetHoldJudgment(tn, iFirstTrackWithMaxEndRow);
     HandleHoldScore(tn);
+	this->m_bBroadcastScoreThisUpdate = true;
     // LOG->Trace("hold result =
     // %s",StringConversion::ToString(tn.HoldResult.hns).c_str());
   }
@@ -2185,6 +2189,7 @@ void Player::ScoreAllActiveHoldsLetGo() {
           tn.HoldResult.fLife = 0;
 
           SetHoldJudgment(tn, iTrack);
+		  this->m_bBroadcastScoreThisUpdate = true;
           HandleHoldScore(tn);
         }
       }
@@ -2952,6 +2957,7 @@ void Player::UpdateJudgedRows() {
               NoteDataWithScoring::LastTapNoteWithResult(m_NoteData, iRow));
         }
         HandleTapRowScore(iRow);
+		this->m_bBroadcastScoreThisUpdate = true;
       }
     }
   }
@@ -2992,9 +2998,11 @@ void Player::UpdateJudgedRows() {
         case TNS_AvoidMine:
           SetMineJudgment(tn.result.tns, iter.Track());
           tn.result.bHidden = true;
+		  this->m_bBroadcastScoreThisUpdate = true;
           continue;
         case TNS_HitMine:
           SetMineJudgment(tn.result.tns, iter.Track());
+		  this->m_bBroadcastScoreThisUpdate = true;
           break;
       }
       if (m_pNoteField) {

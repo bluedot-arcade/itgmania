@@ -83,6 +83,7 @@
 #include "ThemeManager.h"
 #include "UnlockManager.h"
 #include "ver.h"
+#include "SyncStartManager.h"
 
 void ShutdownGame();
 bool HandleGlobalInputs(const InputEventPlus& input);
@@ -941,6 +942,7 @@ int sm_main(int argc, char* argv[]) {
   SONGMAN->UpdatePreferredSort();
   NETWORK = new NetworkManager;
   STATSMAN = new StatsManager;
+  SYNCMAN = new SyncStartManager;
 
   // Initialize which courses are ranking courses here.
   SONGMAN->UpdateRankingCourses();
