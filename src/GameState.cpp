@@ -96,9 +96,28 @@ SortOrder GetDefaultSort()
 ThemeMetric<RString> DEFAULT_SONG	("GameState","DefaultSong");
 Song* GameState::GetDefaultSong() const
 {
+	RString defaultSong = PREFSMAN->m_sDefaultSong.Get();
+	if( defaultSong == "" )
+		defaultSong = DEFAULT_SONG;
+
 	SongID sid;
-	sid.FromString( DEFAULT_SONG );
+	sid.FromString( defaultSong );
 	return sid.ToSong();
+}
+
+bool GameState::SetDefaultSongToCurrent()
+{
+	Song* song = m_pCurSong.Get();
+	if(song) {
+		RString prev = PREFSMAN->m_sDefaultSong.Get();
+		RString next = song->GetSongDir();
+		if(prev != next) {
+			PREFSMAN->m_sDefaultSong.Set(next);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 static const ThemeMetric<bool> EDIT_ALLOWED_FOR_EXTRA ("GameState","EditAllowedForExtra");

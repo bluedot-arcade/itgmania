@@ -619,6 +619,7 @@ static LocalizedString CPU				( "ScreenDebugOverlay", "CPU" );
 static LocalizedString SONG			( "ScreenDebugOverlay", "Song" );
 static LocalizedString MACHINE			( "ScreenDebugOverlay", "Machine" );
 static LocalizedString SYNC_TEMPO		( "ScreenDebugOverlay", "Tempo" );
+static LocalizedString SET_DEFAULT_SONG ( "ScreenDebugOverlay", "Set Default Song" );
 
 class DebugLineAutoplay : public IDebugLine
 {
@@ -1345,6 +1346,28 @@ class DebugLineUptime : public IDebugLine
 	virtual void DoAndLog( RString &sMessageOut ) {}
 };
 
+class DebugSetDefaultSong : public IDebugLine
+{
+	virtual RString GetDisplayTitle() { return SET_DEFAULT_SONG.GetValue(); }
+	virtual RString GetDisplayValue() 
+	{ 
+		Song* song = GAMESTATE->GetDefaultSong();
+		return song ? song->GetSongDir() : RString();
+	}
+	virtual bool IsEnabled() 
+	{ 
+		Screen* topScreen = SCREENMAN->GetTopScreen();
+		return topScreen && topScreen->GetName() == "ScreenSelectMusic";	
+	}
+	virtual void DoAndLog( RString &sMessageOut )
+	{
+		if(GAMESTATE->SetDefaultSongToCurrent()) 
+		{
+			IDebugLine::DoAndLog( sMessageOut );
+		}
+	}
+};
+
 /* If you comment out a DECLARE_ONE at the end of the file, it will remove that debug
  * menu line, but it will also change the arrangement of keys to debug menu options.
  * We need a way to generate fake classes in order to preserve the Debug Menu key
@@ -1421,6 +1444,7 @@ DECLARE_ONE(FakeDebugLine2); // force crash
 DECLARE_ONE( DebugLineUptime );
 DECLARE_ONE( DebugLineResetKeyMapping );
 DECLARE_ONE( DebugLineMuteActions );
+DECLARE_ONE( DebugSetDefaultSong );
 
 
 /*

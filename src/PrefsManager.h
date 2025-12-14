@@ -312,6 +312,9 @@ public:
 	Preference<RString>	m_sAdditionalFoldersReadOnly;
 	Preference<RString>	m_sAdditionalFoldersWritable;
 
+	// First song selected when entering the Select Music Screen.
+	Preference<RString> m_sDefaultSong;
+
 	// failsafe
 	Preference<RString>	m_sDefaultTheme;
 

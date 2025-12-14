@@ -288,6 +288,7 @@ PrefsManager::PrefsManager() :
 	m_sAdditionalCourseFoldersWritable( "AdditionalCourseFoldersWritable",	"", nullptr, PreferenceType::Immutable ),
 	m_sAdditionalFoldersReadOnly	( "AdditionalFoldersReadOnly",		"", nullptr, PreferenceType::Immutable ),
 	m_sAdditionalFoldersWritable	( "AdditionalFoldersWritable",		"", nullptr, PreferenceType::Immutable ),
+	m_sDefaultSong			( "DefaultSong",			"" ),
 	m_sDefaultTheme			( "DefaultTheme",			"Simply Love" ),
 	m_sLastSeenVideoDriver		( "LastSeenVideoDriver",		"" ),
 	m_sVideoRenderers		( "VideoRenderers",			"" ),	// StepMania.cpp sets these on first run:

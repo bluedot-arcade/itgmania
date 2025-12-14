@@ -75,6 +75,7 @@ public:
 	 * @param pn the PlayerNumber to save the stats to. */
 	void SaveCurrentSettingsToProfile( PlayerNumber pn );
 	Song* GetDefaultSong() const;
+	bool SetDefaultSongToCurrent();
 
 	bool CanSafelyEnterGameplay(RString& reason);
 	void SetCompatibleStylesForPlayers();
