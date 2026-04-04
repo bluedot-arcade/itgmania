@@ -721,10 +721,51 @@ class LunaMemoryCardManager : public Luna<MemoryCardManager> {
     lua_pushstring(L, p->GetName(pn).c_str());
     return 1;
   }
+  static int GetStorageDevices(T* p, lua_State* L) {
+    lua_newtable(L);
+
+    const auto& devices = p->GetStorageDevices();
+    int tableIndex = 1;
+    for (const auto& device : devices) {
+      lua_newtable(L);
+
+      lua_pushstring(L, device.sOsMountDir.c_str());
+      lua_setfield(L, -2, "mountDir");
+
+      lua_pushstring(L, device.sVolumeLabel.c_str());
+      lua_setfield(L, -2, "volumeLabel");
+
+      lua_pushstring(L, device.sName.c_str());
+      lua_setfield(L, -2, "name");
+
+      lua_pushstring(L, device.sVendor.c_str());
+      lua_setfield(L, -2, "vendor");
+
+      lua_pushstring(L, device.sProduct.c_str());
+      lua_setfield(L, -2, "product");
+
+      lua_pushstring(L, device.m_sError.c_str());
+      lua_setfield(L, -2, "error");
+
+      lua_pushnumber(L, device.iVolumeSizeMB);
+      lua_setfield(L, -2, "sizeMB");
+
+      lua_pushboolean(L, device.m_State == UsbStorageDevice::STATE_READY);
+      lua_setfield(L, -2, "ready");
+
+      lua_pushboolean(L, device.bIsNameAvailable);
+      lua_setfield(L, -2, "nameAvailable");
+
+      lua_rawseti(L, -2, tableIndex++);
+    }
+
+    return 1;
+  }
 
   LunaMemoryCardManager() {
     ADD_METHOD(GetCardState);
     ADD_METHOD(GetName);
+    ADD_METHOD(GetStorageDevices);
   }
 };
 

@@ -1348,6 +1348,30 @@ class LunaRageFileManager : public Luna<RageFileManager> {
     LuaHelpers::CreateTableFromArray(vDirs, L);
     return 1;
   }
+  static int Mount(T* p, lua_State* L) {
+    lua_pushboolean(L, p->Mount(SArg(1), SArg(2), SArg(3)));
+    return 1;
+  }
+  static int Unmount(T* p, lua_State* L) {
+    p->Unmount(SArg(1), SArg(2), SArg(3));
+    COMMON_RETURN_SELF;
+  }
+  static int Remove(T* p, lua_State* L) {
+    lua_pushboolean(L, p->Remove(SArg(1)));
+    return 1;
+  }
+  static int DeleteRecursive(T* p, lua_State* L) {
+    lua_pushboolean(L, p->DeleteRecursive(SArg(1)));
+    return 1;
+  }
+  static int CreateDir(T* p, lua_State* L) {
+    p->CreateDir(SArg(1));
+    COMMON_RETURN_SELF;
+  }
+  static int ResolvePath(T* p, lua_State* L) {
+    lua_pushstring(L, p->ResolvePath(SArg(1)).c_str());
+    return 1;
+  }
   static int Unzip(T* p, lua_State* L) {
     std::string zipPath = SArg(1);
     std::string targetPath = SArg(2);
@@ -1365,10 +1389,16 @@ class LunaRageFileManager : public Luna<RageFileManager> {
 
   LunaRageFileManager() {
     ADD_METHOD(Copy);
+    ADD_METHOD(CreateDir);
+    ADD_METHOD(DeleteRecursive);
     ADD_METHOD(DoesFileExist);
     ADD_METHOD(GetFileSizeBytes);
     ADD_METHOD(GetHashForFile);
     ADD_METHOD(GetDirListing);
+    ADD_METHOD(Mount);
+    ADD_METHOD(Remove);
+    ADD_METHOD(ResolvePath);
+    ADD_METHOD(Unmount);
     ADD_METHOD(Unzip);
   }
 };
