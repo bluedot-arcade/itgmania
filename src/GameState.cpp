@@ -148,6 +148,8 @@ static ThemeMetric<bool> ARE_STAGE_SONG_MODS_FORCED(
     "GameState", "AreStageSongModsForced");
 
 static Preference<Premium> g_Premium("Premium", Premium_DoubleFor1Credit);
+static Preference<float> g_fPremiumFreeSongGraceSeconds(
+    "PremiumFreeSongGraceSeconds", 300.0f);
 Preference<bool> GameState::m_bAutoJoin("AutoJoin", false);
 
 GameState::GameState()
@@ -166,6 +168,8 @@ GameState::GameState()
       m_pCurSteps(Message_CurrentStepsP1Changed),
       m_pCurCourse(Message_CurrentCourseChanged),
       m_pCurTrail(Message_CurrentTrailP1Changed),
+      m_bPremiumFreeEnabled(false),
+      m_fPremiumFreeSeconds(0.0f),
       m_bGameplayLeadIn(Message_GameplayLeadInChanged),
       m_bDidModeChangeNoteSkin(false),
       m_bIsUsingStepTiming(true),
@@ -350,6 +354,7 @@ void GameState::Reset() {
   m_pPreferredSong = nullptr;
   m_pCurCourse.Set(nullptr);
   m_pPreferredCourse = nullptr;
+  SetPremiumFreeEnabled(false, 0.0f);
 
   FOREACH_MultiPlayer(p) m_pMultiPlayerState[p]->Reset();
 
@@ -1443,6 +1448,51 @@ int GameState::GetLoadingCourseSongIndex() const {
     ++iIndex;
   }
   return iIndex;
+}
+
+void GameState::SetPremiumFreeEnabled(bool enabled, float seconds) {
+  m_bPremiumFreeEnabled = enabled && seconds > 0.0f;
+  m_fPremiumFreeSeconds = m_bPremiumFreeEnabled ? seconds : 0.0f;
+  m_PremiumFreeStartTime.SetZero();
+}
+
+void GameState::StartPremiumFreeTimer() {
+  if (m_bPremiumFreeEnabled && m_PremiumFreeStartTime.IsZero()) {
+    m_PremiumFreeStartTime.Touch();
+  }
+}
+
+float GameState::GetPremiumFreeSecondsLeft() const {
+  if (!m_bPremiumFreeEnabled) {
+    return 0.0f;
+  }
+
+  if (m_PremiumFreeStartTime.IsZero()) {
+    return m_fPremiumFreeSeconds;
+  }
+
+  return std::max(0.0f, m_fPremiumFreeSeconds - m_PremiumFreeStartTime.Ago());
+}
+
+float GameState::GetPremiumFreeSongGraceSeconds() const {
+  return std::max(0.0f, g_fPremiumFreeSongGraceSeconds.Get());
+}
+
+bool GameState::IsPremiumFreeExpired() const {
+  return m_bPremiumFreeEnabled && !m_PremiumFreeStartTime.IsZero() &&
+         GetPremiumFreeSecondsLeft() <= 0.0f;
+}
+
+bool GameState::IsSongAllowedByPremiumFree(const Song* song) const {
+  if (!m_bPremiumFreeEnabled) {
+    return true;
+  }
+  if (song == nullptr) {
+    return false;
+  }
+
+  return song->m_fMusicLengthSeconds <=
+         GetPremiumFreeSecondsLeft() + GetPremiumFreeSongGraceSeconds();
 }
 
 static const char* prepare_song_failures[] = {
@@ -2889,6 +2939,18 @@ class LunaGameState : public Luna<GameState> {
       PlayerIsUsingModifier(Enum::Check<PlayerNumber>(L, 1), SArg(2)))
   DEFINE_METHOD(GetCourseSongIndex, GetCourseSongIndex())
   DEFINE_METHOD(GetLoadingCourseSongIndex, GetLoadingCourseSongIndex())
+  static int SetPremiumFreeEnabled(T* p, lua_State* L) {
+    p->SetPremiumFreeEnabled(BArg(1), FArg(2));
+    COMMON_RETURN_SELF;
+  }
+  DEFINE_METHOD(IsPremiumFreeEnabled, IsPremiumFreeEnabled())
+  static int StartPremiumFreeTimer(T* p, lua_State* L) {
+    p->StartPremiumFreeTimer();
+    COMMON_RETURN_SELF;
+  }
+  DEFINE_METHOD(GetPremiumFreeSecondsLeft, GetPremiumFreeSecondsLeft())
+  DEFINE_METHOD(GetPremiumFreeSongGraceSeconds, GetPremiumFreeSongGraceSeconds())
+  DEFINE_METHOD(IsPremiumFreeExpired, IsPremiumFreeExpired())
   DEFINE_METHOD(
       GetSmallestNumStagesLeftForAnyHumanPlayer,
       GetSmallestNumStagesLeftForAnyHumanPlayer())
@@ -3411,6 +3473,12 @@ class LunaGameState : public Luna<GameState> {
     ADD_METHOD(PlayerIsUsingModifier);
     ADD_METHOD(GetCourseSongIndex);
     ADD_METHOD(GetLoadingCourseSongIndex);
+    ADD_METHOD(SetPremiumFreeEnabled);
+    ADD_METHOD(IsPremiumFreeEnabled);
+    ADD_METHOD(StartPremiumFreeTimer);
+    ADD_METHOD(GetPremiumFreeSecondsLeft);
+    ADD_METHOD(GetPremiumFreeSongGraceSeconds);
+    ADD_METHOD(IsPremiumFreeExpired);
     ADD_METHOD(GetSmallestNumStagesLeftForAnyHumanPlayer);
     ADD_METHOD(IsAnExtraStage);
     ADD_METHOD(IsExtraStage);
