@@ -260,6 +260,14 @@ class GameState {
   int GetCourseSongIndex() const;
   std::string GetPlayerDisplayName(PlayerNumber pn) const;
 
+  void SetPremiumFreeEnabled(bool enabled, float seconds);
+  bool IsPremiumFreeEnabled() const { return m_bPremiumFreeEnabled; }
+  void StartPremiumFreeTimer();
+  float GetPremiumFreeSecondsLeft() const;
+  float GetPremiumFreeSongGraceSeconds() const;
+  bool IsPremiumFreeExpired() const;
+  bool IsSongAllowedByPremiumFree(const Song* song) const;
+
   bool m_bLoadingNextSong;
   int GetLoadingCourseSongIndex() const;
 
@@ -282,6 +290,10 @@ class GameState {
   BroadcastOnChangePtr1D<Trail, NUM_PLAYERS> m_pCurTrail;
 
   bool m_bBackedOutOfFinalStage;
+
+  bool m_bPremiumFreeEnabled;
+  float m_fPremiumFreeSeconds;
+  RageTimer m_PremiumFreeStartTime;
 
   // Music statistics:
   SongPosition m_Position;
