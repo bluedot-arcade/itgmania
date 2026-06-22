@@ -607,9 +607,9 @@ void RageDisplay_D3D::EndFrame() {
 
   FrameLimitBeforeVsync();
   g_pd3dDevice->Present(0, 0, 0, 0);
-  FrameLimitAfterVsync();
 
   RageDisplay::EndFrame();
+  FrameLimitAfterVsync();
 }
 
 bool RageDisplay_D3D::SupportsTextureFormat(

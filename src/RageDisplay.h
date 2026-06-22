@@ -492,11 +492,37 @@ class RageDisplay {
   const RageMatrix* GetWorldTop() const;
   const RageMatrix* GetTextureTop() const;
 
-  // Call immediately before and after the backend-specific present routine.
+  // Called by the display backend around its present/end-frame work.
   // When vsync is enabled, the present call itself provides the pacing.
-  // When it is disabled, these helpers apply any manual frame limiting.
+  // When it is disabled, FrameLimitAfterVsync applies manual frame limiting.
   void FrameLimitBeforeVsync();
   void FrameLimitAfterVsync();
+  void SetFrameTimingStats(
+      uint64_t swapUsecs, uint64_t finishUsecs, uint64_t windowUpdateUsecs);
+
+ public:
+  void SetScreenDrawTimingStats(
+      uint64_t beginFrameUsecs,
+      uint64_t sharedBGAUsecs,
+      uint64_t screensUsecs,
+      uint64_t overlaysUsecs,
+      uint64_t endFrameUsecs);
+  void SetBeginFrameTimingStats(
+      uint64_t viewportUsecs,
+      uint64_t clearUsecs,
+      uint64_t baseBeginUsecs,
+      uint64_t renderTargetUsecs);
+  void SetDefaultRenderStateTimingStats(
+      uint64_t lightingUsecs,
+      uint64_t cullUsecs,
+      uint64_t zWriteUsecs,
+      uint64_t zTestUsecs,
+      uint64_t alphaTestUsecs,
+      uint64_t blendUsecs,
+      uint64_t textureFilterUsecs,
+      uint64_t zBiasUsecs,
+      uint64_t perspectiveUsecs);
+  void SetMainLoopTimingStats(uint64_t updateUsecs, uint64_t drawUsecs);
 };
 
 extern RageDisplay*

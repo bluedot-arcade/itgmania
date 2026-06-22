@@ -27,6 +27,7 @@
 #include "RageTextureID.h"
 #include "RageTextureManager.h"
 #include "RageTextureRenderTarget.h"
+#include "RageTimer.h"
 #include "RageTypes.h"
 #include "RageUtil.h"
 #include "RageUtil/Endian.h"
@@ -834,7 +835,15 @@ std::string RageDisplay_Legacy::TryVideoMode(
   /* Set vsync the Windows way, if we can.  (What other extensions are there
    * to do this, for other archs?) */
   if (wglewIsSupported("WGL_EXT_swap_control")) {
-    wglSwapIntervalEXT(p.vsync);
+    const int requestedInterval = p.vsync ? 1 : 0;
+    const BOOL intervalSet = wglSwapIntervalEXT(requestedInterval);
+    const int actualInterval =
+        wglGetSwapIntervalEXT != nullptr ? wglGetSwapIntervalEXT() : -1;
+    LOG->Info(
+        "WGL swap interval requested %i, set result %i, actual %i",
+        requestedInterval,
+        intervalSet,
+        actualInterval);
   } else {
     return std::string(
         "The WGL_EXT_swap_control extension is not supported on your "
@@ -872,16 +881,36 @@ bool RageDisplay_Legacy::BeginFrame() {
   int fWidth = g_pWind->GetActualVideoModeParams().windowWidth;
   int fHeight = g_pWind->GetActualVideoModeParams().windowHeight;
 
+  const uint64_t beforeViewportUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
   glViewport(0, 0, fWidth, fHeight);
+  const uint64_t afterViewportUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
 
   glClearColor(0, 0, 0, 0);
   SetZWrite(true);
+  const uint64_t beforeClearUsecs = RageTimer::GetTimeSinceStartMicroseconds();
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  const uint64_t afterClearUsecs = RageTimer::GetTimeSinceStartMicroseconds();
 
+  const uint64_t beforeBaseBeginUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
   bool beginFrame = RageDisplay::BeginFrame();
+  const uint64_t afterBaseBeginUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
+  uint64_t renderTargetUsecs = 0;
   if (beginFrame && UseOffscreenRenderTarget()) {
+    const uint64_t beforeRenderTargetUsecs =
+        RageTimer::GetTimeSinceStartMicroseconds();
     offscreenRenderTarget->BeginRenderingTo(false);
+    renderTargetUsecs =
+        RageTimer::GetTimeSinceStartMicroseconds() - beforeRenderTargetUsecs;
   }
+  SetBeginFrameTimingStats(
+      afterViewportUsecs - beforeViewportUsecs,
+      afterClearUsecs - beforeClearUsecs,
+      afterBaseBeginUsecs - beforeBaseBeginUsecs,
+      renderTargetUsecs);
 
   return beginFrame;
 }
@@ -906,23 +935,37 @@ void RageDisplay_Legacy::EndFrame() {
   }
 
   FrameLimitBeforeVsync();
+  const uint64_t beforeSwapUsecs = RageTimer::GetTimeSinceStartMicroseconds();
   g_pWind->SwapBuffers();
-  FrameLimitAfterVsync();
+  const uint64_t afterSwapUsecs = RageTimer::GetTimeSinceStartMicroseconds();
 
-  // Some would advise against glFinish(), ever. Those people don't realize
-  // the degree of freedom GL hosts are permitted in queueing commands.
-  // If left to its own devices, the host could lag behind several frames' worth
-  // of commands.
-  // glFlush() only forces the host to not wait to execute all commands
-  // sent so far; it does NOT block on those commands until they finish.
-  // glFinish() blocks. We WANT to block. Why? This puts the engine state
-  // reflected by the next frame as close as possible to the on-screen
-  // appearance of that frame.
-  glFinish();
+  uint64_t afterFinishUsecs = afterSwapUsecs;
+  if (!GetActualVideoModeParams().vsync) {
+    // Some would advise against glFinish(), ever. Those people don't realize
+    // the degree of freedom GL hosts are permitted in queueing commands.
+    // If left to its own devices, the host could lag behind several frames'
+    // worth of commands.
+    // glFlush() only forces the host to not wait to execute all commands
+    // sent so far; it does NOT block on those commands until they finish.
+    // glFinish() blocks. We WANT to block. Why? This puts the engine state
+    // reflected by the next frame as close as possible to the on-screen
+    // appearance of that frame.
+    glFinish();
+    afterFinishUsecs = RageTimer::GetTimeSinceStartMicroseconds();
+  }
 
+  const uint64_t beforeWindowUpdateUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
   g_pWind->Update();
+  const uint64_t afterWindowUpdateUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
+  SetFrameTimingStats(
+      afterSwapUsecs - beforeSwapUsecs,
+      afterFinishUsecs - afterSwapUsecs,
+      afterWindowUpdateUsecs - beforeWindowUpdateUsecs);
 
   RageDisplay::EndFrame();
+  FrameLimitAfterVsync();
 }
 
 RageSurface* RageDisplay_Legacy::CreateScreenshot() {

@@ -506,26 +506,44 @@ void ScreenManager::Draw() {
     return;
   }
 
+  const uint64_t beforeBeginFrameUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
   if (!DISPLAY->BeginFrame()) {
     return;
   }
+  const uint64_t afterBeginFrameUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
 
+  const uint64_t beforeBGAUsecs = RageTimer::GetTimeSinceStartMicroseconds();
   DISPLAY->CameraPushMatrix();
   DISPLAY->LoadMenuPerspective(
       0, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_CENTER_X, SCREEN_CENTER_Y);
   g_pSharedBGA->Draw();
   DISPLAY->CameraPopMatrix();
+  const uint64_t afterBGAUsecs = RageTimer::GetTimeSinceStartMicroseconds();
 
   for (const LoadedScreen& screen :
        g_ScreenStack) {  // Draw all screens bottom to top
     screen.m_pScreen->Draw();
   }
+  const uint64_t afterScreensUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
 
   for (Screen* overlayScreen : g_OverlayScreens) {
     overlayScreen->Draw();
   }
+  const uint64_t afterOverlaysUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
 
   DISPLAY->EndFrame();
+  const uint64_t afterEndFrameUsecs =
+      RageTimer::GetTimeSinceStartMicroseconds();
+  DISPLAY->SetScreenDrawTimingStats(
+      afterBeginFrameUsecs - beforeBeginFrameUsecs,
+      afterBGAUsecs - beforeBGAUsecs,
+      afterScreensUsecs - afterBGAUsecs,
+      afterOverlaysUsecs - afterScreensUsecs,
+      afterEndFrameUsecs - afterOverlaysUsecs);
 }
 
 void ScreenManager::Input(const InputEventPlus& input) {

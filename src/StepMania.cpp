@@ -155,14 +155,16 @@ static void StoreActualGraphicOptions() {
     PREFSMAN->m_bFullscreenIsBorderlessWindow.Set(false);
   }
 
-  /* If we're windowed, we may have tweaked the width based on the aspect ratio.
-   * Don't save this new value over the preferred value. */
-  if (!PREFSMAN->m_bWindowed) {
+  /* If we're windowed or using fullscreen borderless, the actual display mode
+   * may be derived from the desktop mode or aspect ratio. Don't save that over
+   * the user's preferred fullscreen resolution. */
+  if (!params.windowed && !params.bWindowIsFullscreenBorderless) {
     PREFSMAN->m_iDisplayWidth.Set(params.width);
     PREFSMAN->m_iDisplayHeight.Set(params.height);
   }
   PREFSMAN->m_iDisplayColorDepth.Set(params.bpp);
-  if (PREFSMAN->m_iRefreshRate != REFRESH_DEFAULT) {
+  if (PREFSMAN->m_iRefreshRate != REFRESH_DEFAULT && !params.windowed &&
+      !params.bWindowIsFullscreenBorderless) {
     PREFSMAN->m_iRefreshRate.Set(params.rate);
   }
   PREFSMAN->m_bVsync.Set(params.vsync);

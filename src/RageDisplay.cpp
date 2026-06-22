@@ -45,7 +45,60 @@ int RageDisplay::GetCumFPS() const { return g_iCFPS; }
 
 static int g_iFramesRenderedSinceLastCheck, g_iFramesRenderedSinceLastReset,
     g_iVertsRenderedSinceLastCheck, g_iNumChecksSinceLastReset;
-static RageTimer g_LastFrameEndedAt(RageZeroTimer);
+static uint64_t g_iLastFrameEndedAtUsecs = 0;
+static uint64_t g_iLastStatsFrameAtUsecs = 0;
+static uint64_t g_iFrameTimeUsecsTotal = 0;
+static uint64_t g_iFrameTimeUsecsMax = 0;
+static uint64_t g_iFrameTimeUsecsAvg = 0;
+static uint64_t g_iFrameTimeUsecsMaxLast = 0;
+static uint64_t g_iSwapUsecsMax = 0;
+static uint64_t g_iSwapUsecsMaxLast = 0;
+static uint64_t g_iFinishUsecsMax = 0;
+static uint64_t g_iFinishUsecsMaxLast = 0;
+static uint64_t g_iWindowUpdateUsecsMax = 0;
+static uint64_t g_iWindowUpdateUsecsMaxLast = 0;
+static uint64_t g_iMainUpdateUsecsMax = 0;
+static uint64_t g_iMainUpdateUsecsMaxLast = 0;
+static uint64_t g_iMainDrawUsecsMax = 0;
+static uint64_t g_iMainDrawUsecsMaxLast = 0;
+static uint64_t g_iBeginFrameUsecsMax = 0;
+static uint64_t g_iBeginFrameUsecsMaxLast = 0;
+static uint64_t g_iViewportUsecsMax = 0;
+static uint64_t g_iViewportUsecsMaxLast = 0;
+static uint64_t g_iClearUsecsMax = 0;
+static uint64_t g_iClearUsecsMaxLast = 0;
+static uint64_t g_iBaseBeginUsecsMax = 0;
+static uint64_t g_iBaseBeginUsecsMaxLast = 0;
+static uint64_t g_iRenderTargetBeginUsecsMax = 0;
+static uint64_t g_iRenderTargetBeginUsecsMaxLast = 0;
+static uint64_t g_iStateLightingUsecsMax = 0;
+static uint64_t g_iStateLightingUsecsMaxLast = 0;
+static uint64_t g_iStateCullUsecsMax = 0;
+static uint64_t g_iStateCullUsecsMaxLast = 0;
+static uint64_t g_iStateZWriteUsecsMax = 0;
+static uint64_t g_iStateZWriteUsecsMaxLast = 0;
+static uint64_t g_iStateZTestUsecsMax = 0;
+static uint64_t g_iStateZTestUsecsMaxLast = 0;
+static uint64_t g_iStateAlphaTestUsecsMax = 0;
+static uint64_t g_iStateAlphaTestUsecsMaxLast = 0;
+static uint64_t g_iStateBlendUsecsMax = 0;
+static uint64_t g_iStateBlendUsecsMaxLast = 0;
+static uint64_t g_iStateTextureFilterUsecsMax = 0;
+static uint64_t g_iStateTextureFilterUsecsMaxLast = 0;
+static uint64_t g_iStateZBiasUsecsMax = 0;
+static uint64_t g_iStateZBiasUsecsMaxLast = 0;
+static uint64_t g_iStatePerspectiveUsecsMax = 0;
+static uint64_t g_iStatePerspectiveUsecsMaxLast = 0;
+static uint64_t g_iSharedBGAUsecsMax = 0;
+static uint64_t g_iSharedBGAUsecsMaxLast = 0;
+static uint64_t g_iScreensDrawUsecsMax = 0;
+static uint64_t g_iScreensDrawUsecsMaxLast = 0;
+static uint64_t g_iOverlaysDrawUsecsMax = 0;
+static uint64_t g_iOverlaysDrawUsecsMaxLast = 0;
+static uint64_t g_iEndFrameUsecsMax = 0;
+static uint64_t g_iEndFrameUsecsMaxLast = 0;
+static int g_iLateFramesSinceLastCheck = 0;
+static int g_iLateFramesLast = 0;
 
 struct Centering {
   Centering(
@@ -65,7 +118,15 @@ RageDisplay* DISPLAY =
     nullptr;  // global and accessible from anywhere in our program
 
 Preference<bool> LOG_FPS("LogFPS", false);
-Preference<float> g_fFrameLimitPercent("FrameLimitPercent", 0.0f);
+
+static void ValidateMaxFPS(int& val) {
+  if (val < 30) {
+    val = 0;
+  } else {
+    val = std::min(val, 1200);
+  }
+}
+Preference<int> g_iMaxFPS("MaxFPS", 0, ValidateMaxFPS);
 
 static const char* RagePixelFormatNames[] = {
     "RGBA8", "BGRA8", "RGBA4", "RGB5A1", "RGB5",
@@ -139,6 +200,23 @@ std::string RageDisplay::SetVideoMode(
 }
 
 void RageDisplay::ProcessStatsOnFlip() {
+  const uint64_t nowUsecs = RageTimer::GetTimeSinceStartMicroseconds();
+  if (g_iLastStatsFrameAtUsecs > 0) {
+    const uint64_t frameUsecs = nowUsecs - g_iLastStatsFrameAtUsecs;
+    const auto vm = GetActualVideoModeParams();
+    const int expectedFPS =
+        vm.vsync && vm.rate > 0 ? vm.rate : std::max(g_iMaxFPS.Get(), 0);
+    if (expectedFPS > 0) {
+      const uint64_t expectedUsecs = 1000000ULL / expectedFPS;
+      if (frameUsecs > expectedUsecs + (expectedUsecs / 4)) {
+        g_iLateFramesSinceLastCheck++;
+      }
+    }
+    g_iFrameTimeUsecsTotal += frameUsecs;
+    g_iFrameTimeUsecsMax = std::max(g_iFrameTimeUsecsMax, frameUsecs);
+  }
+  g_iLastStatsFrameAtUsecs = nowUsecs;
+
   g_iFramesRenderedSinceLastCheck++;
   g_iFramesRenderedSinceLastReset++;
 
@@ -150,7 +228,48 @@ void RageDisplay::ProcessStatsOnFlip() {
     g_iCFPS = g_iFramesRenderedSinceLastReset / g_iNumChecksSinceLastReset;
     g_iCFPS = std::lrint(g_iCFPS / fActualTime);
     g_iVPF = g_iVertsRenderedSinceLastCheck / g_iFramesRenderedSinceLastCheck;
+    g_iFrameTimeUsecsAvg =
+        g_iFrameTimeUsecsTotal / g_iFramesRenderedSinceLastCheck;
+    g_iFrameTimeUsecsMaxLast = g_iFrameTimeUsecsMax;
+    g_iSwapUsecsMaxLast = g_iSwapUsecsMax;
+    g_iFinishUsecsMaxLast = g_iFinishUsecsMax;
+    g_iWindowUpdateUsecsMaxLast = g_iWindowUpdateUsecsMax;
+    g_iMainUpdateUsecsMaxLast = g_iMainUpdateUsecsMax;
+    g_iMainDrawUsecsMaxLast = g_iMainDrawUsecsMax;
+    g_iBeginFrameUsecsMaxLast = g_iBeginFrameUsecsMax;
+    g_iViewportUsecsMaxLast = g_iViewportUsecsMax;
+    g_iClearUsecsMaxLast = g_iClearUsecsMax;
+    g_iBaseBeginUsecsMaxLast = g_iBaseBeginUsecsMax;
+    g_iRenderTargetBeginUsecsMaxLast = g_iRenderTargetBeginUsecsMax;
+    g_iStateLightingUsecsMaxLast = g_iStateLightingUsecsMax;
+    g_iStateCullUsecsMaxLast = g_iStateCullUsecsMax;
+    g_iStateZWriteUsecsMaxLast = g_iStateZWriteUsecsMax;
+    g_iStateZTestUsecsMaxLast = g_iStateZTestUsecsMax;
+    g_iStateAlphaTestUsecsMaxLast = g_iStateAlphaTestUsecsMax;
+    g_iStateBlendUsecsMaxLast = g_iStateBlendUsecsMax;
+    g_iStateTextureFilterUsecsMaxLast = g_iStateTextureFilterUsecsMax;
+    g_iStateZBiasUsecsMaxLast = g_iStateZBiasUsecsMax;
+    g_iStatePerspectiveUsecsMaxLast = g_iStatePerspectiveUsecsMax;
+    g_iSharedBGAUsecsMaxLast = g_iSharedBGAUsecsMax;
+    g_iScreensDrawUsecsMaxLast = g_iScreensDrawUsecsMax;
+    g_iOverlaysDrawUsecsMaxLast = g_iOverlaysDrawUsecsMax;
+    g_iEndFrameUsecsMaxLast = g_iEndFrameUsecsMax;
+    g_iLateFramesLast = g_iLateFramesSinceLastCheck;
     g_iFramesRenderedSinceLastCheck = g_iVertsRenderedSinceLastCheck = 0;
+    g_iFrameTimeUsecsTotal = g_iFrameTimeUsecsMax = 0;
+    g_iSwapUsecsMax = g_iFinishUsecsMax = g_iWindowUpdateUsecsMax = 0;
+    g_iMainUpdateUsecsMax = g_iMainDrawUsecsMax = 0;
+    g_iBeginFrameUsecsMax = 0;
+    g_iViewportUsecsMax = g_iClearUsecsMax = 0;
+    g_iBaseBeginUsecsMax = g_iRenderTargetBeginUsecsMax = 0;
+    g_iStateLightingUsecsMax = g_iStateCullUsecsMax = 0;
+    g_iStateZWriteUsecsMax = g_iStateZTestUsecsMax = 0;
+    g_iStateAlphaTestUsecsMax = g_iStateBlendUsecsMax = 0;
+    g_iStateTextureFilterUsecsMax = g_iStateZBiasUsecsMax = 0;
+    g_iStatePerspectiveUsecsMax = 0;
+    g_iSharedBGAUsecsMax = g_iScreensDrawUsecsMax = 0;
+    g_iOverlaysDrawUsecsMax = g_iEndFrameUsecsMax = 0;
+    g_iLateFramesSinceLastCheck = 0;
     if (LOG_FPS) {
       std::string sStats = GetStats();
       Replace(sStats, "\n", ", ");
@@ -164,6 +283,33 @@ void RageDisplay::ResetStats() {
   g_iFramesRenderedSinceLastCheck = g_iFramesRenderedSinceLastReset = 0;
   g_iNumChecksSinceLastReset = 0;
   g_iVertsRenderedSinceLastCheck = 0;
+  g_iLastStatsFrameAtUsecs = 0;
+  g_iFrameTimeUsecsTotal = g_iFrameTimeUsecsMax = 0;
+  g_iFrameTimeUsecsAvg = g_iFrameTimeUsecsMaxLast = 0;
+  g_iSwapUsecsMax = g_iSwapUsecsMaxLast = 0;
+  g_iFinishUsecsMax = g_iFinishUsecsMaxLast = 0;
+  g_iWindowUpdateUsecsMax = g_iWindowUpdateUsecsMaxLast = 0;
+  g_iMainUpdateUsecsMax = g_iMainUpdateUsecsMaxLast = 0;
+  g_iMainDrawUsecsMax = g_iMainDrawUsecsMaxLast = 0;
+  g_iBeginFrameUsecsMax = g_iBeginFrameUsecsMaxLast = 0;
+  g_iViewportUsecsMax = g_iViewportUsecsMaxLast = 0;
+  g_iClearUsecsMax = g_iClearUsecsMaxLast = 0;
+  g_iBaseBeginUsecsMax = g_iBaseBeginUsecsMaxLast = 0;
+  g_iRenderTargetBeginUsecsMax = g_iRenderTargetBeginUsecsMaxLast = 0;
+  g_iStateLightingUsecsMax = g_iStateLightingUsecsMaxLast = 0;
+  g_iStateCullUsecsMax = g_iStateCullUsecsMaxLast = 0;
+  g_iStateZWriteUsecsMax = g_iStateZWriteUsecsMaxLast = 0;
+  g_iStateZTestUsecsMax = g_iStateZTestUsecsMaxLast = 0;
+  g_iStateAlphaTestUsecsMax = g_iStateAlphaTestUsecsMaxLast = 0;
+  g_iStateBlendUsecsMax = g_iStateBlendUsecsMaxLast = 0;
+  g_iStateTextureFilterUsecsMax = g_iStateTextureFilterUsecsMaxLast = 0;
+  g_iStateZBiasUsecsMax = g_iStateZBiasUsecsMaxLast = 0;
+  g_iStatePerspectiveUsecsMax = g_iStatePerspectiveUsecsMaxLast = 0;
+  g_iSharedBGAUsecsMax = g_iSharedBGAUsecsMaxLast = 0;
+  g_iScreensDrawUsecsMax = g_iScreensDrawUsecsMaxLast = 0;
+  g_iOverlaysDrawUsecsMax = g_iOverlaysDrawUsecsMaxLast = 0;
+  g_iEndFrameUsecsMax = g_iEndFrameUsecsMaxLast = 0;
+  g_iLateFramesSinceLastCheck = g_iLateFramesLast = 0;
   g_LastCheckTimer.GetDeltaTime();
 }
 
@@ -180,6 +326,44 @@ std::string RageDisplay::GetStats() const {
   s += "\n" + this->GetApiDescription();
   //	#endif
 
+  const auto vm = GetActualVideoModeParams();
+  const int maxFPS = g_iMaxFPS.Get();
+  s += ssprintf(
+      "\n%iHz %s\nMaxFPS %s",
+      vm.rate,
+      vm.vsync ? "VSync on" : "VSync off",
+      maxFPS > 0 ? ssprintf("%i", maxFPS).c_str() : "off");
+  if (g_iFrameTimeUsecsAvg > 0) {
+    s += ssprintf(
+        "\n%.2f/%.2fms late %i\nupd %.2f draw %.2f\nbeg %.2f vp %.2f clr %.2f base %.2f rt %.2f\nst %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\nbga %.2f scr %.2f ov %.2f end %.2f\nsw %.2f fn %.2f up %.2f",
+        g_iFrameTimeUsecsAvg / 1000.0,
+        g_iFrameTimeUsecsMaxLast / 1000.0,
+        g_iLateFramesLast,
+        g_iMainUpdateUsecsMaxLast / 1000.0,
+        g_iMainDrawUsecsMaxLast / 1000.0,
+        g_iBeginFrameUsecsMaxLast / 1000.0,
+        g_iViewportUsecsMaxLast / 1000.0,
+        g_iClearUsecsMaxLast / 1000.0,
+        g_iBaseBeginUsecsMaxLast / 1000.0,
+        g_iRenderTargetBeginUsecsMaxLast / 1000.0,
+        g_iStateLightingUsecsMaxLast / 1000.0,
+        g_iStateCullUsecsMaxLast / 1000.0,
+        g_iStateZWriteUsecsMaxLast / 1000.0,
+        g_iStateZTestUsecsMaxLast / 1000.0,
+        g_iStateAlphaTestUsecsMaxLast / 1000.0,
+        g_iStateBlendUsecsMaxLast / 1000.0,
+        g_iStateTextureFilterUsecsMaxLast / 1000.0,
+        g_iStateZBiasUsecsMaxLast / 1000.0,
+        g_iStatePerspectiveUsecsMaxLast / 1000.0,
+        g_iSharedBGAUsecsMaxLast / 1000.0,
+        g_iScreensDrawUsecsMaxLast / 1000.0,
+        g_iOverlaysDrawUsecsMaxLast / 1000.0,
+        g_iEndFrameUsecsMaxLast / 1000.0,
+        g_iSwapUsecsMaxLast / 1000.0,
+        g_iFinishUsecsMaxLast / 1000.0,
+        g_iWindowUpdateUsecsMaxLast / 1000.0);
+  }
+
   return s;
 }
 
@@ -190,6 +374,70 @@ bool RageDisplay::BeginFrame() {
 }
 
 void RageDisplay::EndFrame() { ProcessStatsOnFlip(); }
+
+void RageDisplay::SetFrameTimingStats(
+    uint64_t swapUsecs, uint64_t finishUsecs, uint64_t windowUpdateUsecs) {
+  g_iSwapUsecsMax = std::max(g_iSwapUsecsMax, swapUsecs);
+  g_iFinishUsecsMax = std::max(g_iFinishUsecsMax, finishUsecs);
+  g_iWindowUpdateUsecsMax =
+      std::max(g_iWindowUpdateUsecsMax, windowUpdateUsecs);
+}
+
+void RageDisplay::SetScreenDrawTimingStats(
+    uint64_t beginFrameUsecs,
+    uint64_t sharedBGAUsecs,
+    uint64_t screensUsecs,
+    uint64_t overlaysUsecs,
+    uint64_t endFrameUsecs) {
+  g_iBeginFrameUsecsMax = std::max(g_iBeginFrameUsecsMax, beginFrameUsecs);
+  g_iSharedBGAUsecsMax = std::max(g_iSharedBGAUsecsMax, sharedBGAUsecs);
+  g_iScreensDrawUsecsMax = std::max(g_iScreensDrawUsecsMax, screensUsecs);
+  g_iOverlaysDrawUsecsMax = std::max(g_iOverlaysDrawUsecsMax, overlaysUsecs);
+  g_iEndFrameUsecsMax = std::max(g_iEndFrameUsecsMax, endFrameUsecs);
+}
+
+void RageDisplay::SetBeginFrameTimingStats(
+    uint64_t viewportUsecs,
+    uint64_t clearUsecs,
+    uint64_t baseBeginUsecs,
+    uint64_t renderTargetUsecs) {
+  g_iViewportUsecsMax = std::max(g_iViewportUsecsMax, viewportUsecs);
+  g_iClearUsecsMax = std::max(g_iClearUsecsMax, clearUsecs);
+  g_iBaseBeginUsecsMax = std::max(g_iBaseBeginUsecsMax, baseBeginUsecs);
+  g_iRenderTargetBeginUsecsMax =
+      std::max(g_iRenderTargetBeginUsecsMax, renderTargetUsecs);
+}
+
+void RageDisplay::SetDefaultRenderStateTimingStats(
+    uint64_t lightingUsecs,
+    uint64_t cullUsecs,
+    uint64_t zWriteUsecs,
+    uint64_t zTestUsecs,
+    uint64_t alphaTestUsecs,
+    uint64_t blendUsecs,
+    uint64_t textureFilterUsecs,
+    uint64_t zBiasUsecs,
+    uint64_t perspectiveUsecs) {
+  g_iStateLightingUsecsMax =
+      std::max(g_iStateLightingUsecsMax, lightingUsecs);
+  g_iStateCullUsecsMax = std::max(g_iStateCullUsecsMax, cullUsecs);
+  g_iStateZWriteUsecsMax = std::max(g_iStateZWriteUsecsMax, zWriteUsecs);
+  g_iStateZTestUsecsMax = std::max(g_iStateZTestUsecsMax, zTestUsecs);
+  g_iStateAlphaTestUsecsMax =
+      std::max(g_iStateAlphaTestUsecsMax, alphaTestUsecs);
+  g_iStateBlendUsecsMax = std::max(g_iStateBlendUsecsMax, blendUsecs);
+  g_iStateTextureFilterUsecsMax =
+      std::max(g_iStateTextureFilterUsecsMax, textureFilterUsecs);
+  g_iStateZBiasUsecsMax = std::max(g_iStateZBiasUsecsMax, zBiasUsecs);
+  g_iStatePerspectiveUsecsMax =
+      std::max(g_iStatePerspectiveUsecsMax, perspectiveUsecs);
+}
+
+void RageDisplay::SetMainLoopTimingStats(
+    uint64_t updateUsecs, uint64_t drawUsecs) {
+  g_iMainUpdateUsecsMax = std::max(g_iMainUpdateUsecsMax, updateUsecs);
+  g_iMainDrawUsecsMax = std::max(g_iMainDrawUsecsMax, drawUsecs);
+}
 
 void RageDisplay::BeginConcurrentRendering() { this->SetDefaultRenderStates(); }
 
@@ -265,15 +513,35 @@ void RageDisplay::DrawCircleInternal(const RageSpriteVertex& p, float radius) {
 }
 
 void RageDisplay::SetDefaultRenderStates() {
+  const auto time = []() { return RageTimer::GetTimeSinceStartMicroseconds(); };
+  uint64_t start = time();
   SetLighting(false);
+  const uint64_t afterLighting = time();
   SetCullMode(CULL_NONE);
+  const uint64_t afterCull = time();
   SetZWrite(false);
+  const uint64_t afterZWrite = time();
   SetZTestMode(ZTEST_OFF);
+  const uint64_t afterZTest = time();
   SetAlphaTest(true);
+  const uint64_t afterAlphaTest = time();
   SetBlendMode(BLEND_NORMAL);
-  SetTextureFiltering(TextureUnit_1, true);
+  const uint64_t afterBlend = time();
+  const uint64_t afterTextureFilter = afterBlend;
   SetZBias(0);
+  const uint64_t afterZBias = time();
   LoadMenuPerspective(0, 640, 480, 320, 240);  // 0 FOV = ortho
+  const uint64_t afterPerspective = time();
+  SetDefaultRenderStateTimingStats(
+      afterLighting - start,
+      afterCull - afterLighting,
+      afterZWrite - afterCull,
+      afterZTest - afterZWrite,
+      afterAlphaTest - afterZTest,
+      afterBlend - afterAlphaTest,
+      afterTextureFilter - afterBlend,
+      afterZBias - afterTextureFilter,
+      afterPerspective - afterZBias);
 }
 
 // Matrix stuff
@@ -835,46 +1103,39 @@ void RageDisplay::DrawCircle(const RageSpriteVertex& v, float radius) {
   this->DrawCircleInternal(v, radius);
 }
 
-int GetFrameLimitIntervalAsMicroseconds(
-    const ActualVideoModeParams& vm) noexcept {
-  const bool noValidFrameTimingHistoryOrVsync =
-      !vm.vsync && vm.rate > 0 && g_fFrameLimitPercent.Get() > 0.0f &&
-      !g_LastFrameEndedAt.IsZero();
+void RageDisplay::FrameLimitBeforeVsync() {
+}
 
-  int iDelayMicroseconds = 0;
-  if (noValidFrameTimingHistoryOrVsync) {
-    float fFrameTime = g_LastFrameEndedAt.GetDeltaTime();
-    float fExpectedTime = 1.0f / vm.rate;
+void RageDisplay::FrameLimitAfterVsync() {
+  constexpr uint64_t SLEEP_GUARD_USECS = 1000;
+  constexpr int BUSY_WAIT_ONLY_FPS = 200;
+  const auto vm = GetActualVideoModeParams();
+  const int maxFPS = g_iMaxFPS.Get();
 
-    /* This is typically used to turn some of the delay that would normally
-     * be waiting for vsync and turn it into a usleep, to make sure we give
-     * up the CPU.  If we overshoot the sleep, then we'll miss the vsync,
-     * so allow tweaking the amount of time we expect a frame to take.
-     * Frame limiting is disabled by setting this to 0. */
-    fExpectedTime *= g_fFrameLimitPercent.Get();
-    float fExtraTime = fExpectedTime - fFrameTime;
+  if (!vm.vsync && maxFPS > 0 && g_iLastFrameEndedAtUsecs > 0) {
+    const uint64_t targetUsecs =
+        g_iLastFrameEndedAtUsecs + (1000000ULL / maxFPS);
+    uint64_t nowUsecs = RageTimer::GetTimeSinceStartMicroseconds();
 
-    iDelayMicroseconds = int(fExtraTime * 1000000);
+    if (maxFPS < BUSY_WAIT_ONLY_FPS) {
+      while (nowUsecs + SLEEP_GUARD_USECS < targetUsecs) {
+        const uint64_t sleepUsecs =
+            targetUsecs - nowUsecs - SLEEP_GUARD_USECS;
+        usleep(static_cast<unsigned long>(sleepUsecs));
+        nowUsecs = RageTimer::GetTimeSinceStartMicroseconds();
+      }
+    }
+
+    while (RageTimer::GetTimeSinceStartMicroseconds() < targetUsecs) {
+    }
   }
 
   if (!HOOKS->AppHasFocus()) {
-    iDelayMicroseconds = std::max(
-        iDelayMicroseconds,
-        10000);  // give some time to other processes and threads
+    usleep(10000);  // give some time to other processes and threads
   }
 
-  return iDelayMicroseconds;
+  g_iLastFrameEndedAtUsecs = RageTimer::GetTimeSinceStartMicroseconds();
 }
-
-void RageDisplay::FrameLimitBeforeVsync() {
-  const int iDelayMicroseconds =
-      GetFrameLimitIntervalAsMicroseconds(GetActualVideoModeParams());
-  if (iDelayMicroseconds > 0) {
-    usleep(iDelayMicroseconds);
-  }
-}
-
-void RageDisplay::FrameLimitAfterVsync() { g_LastFrameEndedAt.Touch(); }
 
 RageCompiledGeometry::~RageCompiledGeometry() { m_bNeedsNormals = false; }
 

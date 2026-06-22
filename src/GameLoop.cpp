@@ -297,11 +297,20 @@ void GameLoop::RunGameLoop() {
       ArchHooks::SetUserQuit();
     }
 
+    const uint64_t beforeUpdateUsecs =
+        RageTimer::GetTimeSinceStartMicroseconds();
     UpdateAllButDraw();
+    const uint64_t afterUpdateUsecs =
+        RageTimer::GetTimeSinceStartMicroseconds();
 
     CallEveryNFrames(500, CheckInputDevices);
 
+    const uint64_t beforeDrawUsecs = RageTimer::GetTimeSinceStartMicroseconds();
     SCREENMAN->Draw();
+    const uint64_t afterDrawUsecs = RageTimer::GetTimeSinceStartMicroseconds();
+    DISPLAY->SetMainLoopTimingStats(
+        afterUpdateUsecs - beforeUpdateUsecs,
+        afterDrawUsecs - beforeDrawUsecs);
   }
 
   // If we ended mid-game, finish up.

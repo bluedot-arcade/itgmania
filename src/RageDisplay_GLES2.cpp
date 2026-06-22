@@ -415,11 +415,11 @@ void RageDisplay_GLES2::EndFrame() {
   // XXX: This is broken on NVidia, as their xrandr sucks.
   FrameLimitBeforeVsync();
   g_pWind->SwapBuffers();
-  FrameLimitAfterVsync();
 
   g_pWind->Update();
 
   RageDisplay::EndFrame();
+  FrameLimitAfterVsync();
 }
 
 RageDisplay_GLES2::~RageDisplay_GLES2() { delete g_pWind; }
