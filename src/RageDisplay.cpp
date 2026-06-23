@@ -1,6 +1,7 @@
 #include "RageDisplay.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -99,6 +100,18 @@ static uint64_t g_iEndFrameUsecsMax = 0;
 static uint64_t g_iEndFrameUsecsMaxLast = 0;
 static int g_iLateFramesSinceLastCheck = 0;
 static int g_iLateFramesLast = 0;
+static std::atomic<uint64_t> g_iTextureFilterCalls{0};
+static std::atomic<uint64_t> g_iTextureFilterNoTexture{0};
+static std::atomic<uint64_t> g_iTextureFilterCached{0};
+static std::atomic<uint64_t> g_iTextureFilterFallback{0};
+static std::atomic<uint64_t> g_iTextureFilterChanged{0};
+static std::atomic<uint64_t> g_iTextureFilterSkipped{0};
+static uint64_t g_iTextureFilterCallsLast = 0;
+static uint64_t g_iTextureFilterNoTextureLast = 0;
+static uint64_t g_iTextureFilterCachedLast = 0;
+static uint64_t g_iTextureFilterFallbackLast = 0;
+static uint64_t g_iTextureFilterChangedLast = 0;
+static uint64_t g_iTextureFilterSkippedLast = 0;
 
 struct Centering {
   Centering(
@@ -255,6 +268,18 @@ void RageDisplay::ProcessStatsOnFlip() {
     g_iOverlaysDrawUsecsMaxLast = g_iOverlaysDrawUsecsMax;
     g_iEndFrameUsecsMaxLast = g_iEndFrameUsecsMax;
     g_iLateFramesLast = g_iLateFramesSinceLastCheck;
+    g_iTextureFilterCallsLast =
+        g_iTextureFilterCalls.exchange(0, std::memory_order_relaxed);
+    g_iTextureFilterNoTextureLast =
+        g_iTextureFilterNoTexture.exchange(0, std::memory_order_relaxed);
+    g_iTextureFilterCachedLast =
+        g_iTextureFilterCached.exchange(0, std::memory_order_relaxed);
+    g_iTextureFilterFallbackLast =
+        g_iTextureFilterFallback.exchange(0, std::memory_order_relaxed);
+    g_iTextureFilterChangedLast =
+        g_iTextureFilterChanged.exchange(0, std::memory_order_relaxed);
+    g_iTextureFilterSkippedLast =
+        g_iTextureFilterSkipped.exchange(0, std::memory_order_relaxed);
     g_iFramesRenderedSinceLastCheck = g_iVertsRenderedSinceLastCheck = 0;
     g_iFrameTimeUsecsTotal = g_iFrameTimeUsecsMax = 0;
     g_iSwapUsecsMax = g_iFinishUsecsMax = g_iWindowUpdateUsecsMax = 0;
@@ -310,6 +335,16 @@ void RageDisplay::ResetStats() {
   g_iOverlaysDrawUsecsMax = g_iOverlaysDrawUsecsMaxLast = 0;
   g_iEndFrameUsecsMax = g_iEndFrameUsecsMaxLast = 0;
   g_iLateFramesSinceLastCheck = g_iLateFramesLast = 0;
+  g_iTextureFilterCalls.store(0, std::memory_order_relaxed);
+  g_iTextureFilterNoTexture.store(0, std::memory_order_relaxed);
+  g_iTextureFilterCached.store(0, std::memory_order_relaxed);
+  g_iTextureFilterFallback.store(0, std::memory_order_relaxed);
+  g_iTextureFilterChanged.store(0, std::memory_order_relaxed);
+  g_iTextureFilterSkipped.store(0, std::memory_order_relaxed);
+  g_iTextureFilterCallsLast = g_iTextureFilterNoTextureLast = 0;
+  g_iTextureFilterCachedLast = 0;
+  g_iTextureFilterFallbackLast = g_iTextureFilterChangedLast = 0;
+  g_iTextureFilterSkippedLast = 0;
   g_LastCheckTimer.GetDeltaTime();
 }
 
@@ -335,7 +370,7 @@ std::string RageDisplay::GetStats() const {
       maxFPS > 0 ? ssprintf("%i", maxFPS).c_str() : "off");
   if (g_iFrameTimeUsecsAvg > 0) {
     s += ssprintf(
-        "\n%.2f/%.2fms late %i\nupd %.2f draw %.2f\nbeg %.2f vp %.2f clr %.2f base %.2f rt %.2f\nst %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\nbga %.2f scr %.2f ov %.2f end %.2f\nsw %.2f fn %.2f up %.2f",
+        "\n%.2f/%.2fms late %i\nupd %.2f draw %.2f\nbeg %.2f vp %.2f clr %.2f base %.2f rt %.2f\nst %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\nbga %.2f scr %.2f ov %.2f end %.2f\nsw %.2f fn %.2f up %.2f\ntex %llu none %llu cache %llu fall %llu chg %llu skip %llu",
         g_iFrameTimeUsecsAvg / 1000.0,
         g_iFrameTimeUsecsMaxLast / 1000.0,
         g_iLateFramesLast,
@@ -361,7 +396,13 @@ std::string RageDisplay::GetStats() const {
         g_iEndFrameUsecsMaxLast / 1000.0,
         g_iSwapUsecsMaxLast / 1000.0,
         g_iFinishUsecsMaxLast / 1000.0,
-        g_iWindowUpdateUsecsMaxLast / 1000.0);
+        g_iWindowUpdateUsecsMaxLast / 1000.0,
+        static_cast<unsigned long long>(g_iTextureFilterCallsLast),
+        static_cast<unsigned long long>(g_iTextureFilterNoTextureLast),
+        static_cast<unsigned long long>(g_iTextureFilterCachedLast),
+        static_cast<unsigned long long>(g_iTextureFilterFallbackLast),
+        static_cast<unsigned long long>(g_iTextureFilterChangedLast),
+        static_cast<unsigned long long>(g_iTextureFilterSkippedLast));
   }
 
   return s;
@@ -381,6 +422,19 @@ void RageDisplay::SetFrameTimingStats(
   g_iFinishUsecsMax = std::max(g_iFinishUsecsMax, finishUsecs);
   g_iWindowUpdateUsecsMax =
       std::max(g_iWindowUpdateUsecsMax, windowUpdateUsecs);
+}
+
+void RageDisplay::StatsTextureFiltering(
+    bool hasTexture, bool cachedTexture, bool changedState) {
+  g_iTextureFilterCalls.fetch_add(1, std::memory_order_relaxed);
+  if (!hasTexture) {
+    g_iTextureFilterNoTexture.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  (cachedTexture ? g_iTextureFilterCached : g_iTextureFilterFallback)
+      .fetch_add(1, std::memory_order_relaxed);
+  (changedState ? g_iTextureFilterChanged : g_iTextureFilterSkipped)
+      .fetch_add(1, std::memory_order_relaxed);
 }
 
 void RageDisplay::SetScreenDrawTimingStats(

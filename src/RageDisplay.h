@@ -523,6 +523,8 @@ class RageDisplay {
       uint64_t zBiasUsecs,
       uint64_t perspectiveUsecs);
   void SetMainLoopTimingStats(uint64_t updateUsecs, uint64_t drawUsecs);
+  void StatsTextureFiltering(
+      bool hasTexture, bool cachedTexture, bool changedState);
 };
 
 extern RageDisplay*

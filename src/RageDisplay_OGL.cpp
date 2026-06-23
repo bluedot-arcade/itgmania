@@ -1,11 +1,13 @@
 #include "RageDisplay_OGL.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <utility>
@@ -80,6 +82,54 @@ static GLhandleARB g_bTextureMatrixShader = 0;
 
 static std::map<uintptr_t, RenderTarget*> g_mapRenderTargets;
 static RenderTarget* g_pCurrentRenderTarget = nullptr;
+
+struct TextureState {
+  explicit TextureState(bool hasMipmaps)
+      : hasMipmaps(hasMipmaps) {}
+
+  bool hasMipmaps;
+  GLint minFilter = -1;
+  GLint magFilter = -1;
+  GLint wrapMode = -1;
+};
+
+/* Texture filtering is selected for every textured actor.  Keep the texture
+ * properties that determine that selection on the CPU instead of querying GL
+ * while drawing; glGetTexLevelParameteriv can synchronize with the driver.
+ * The mutex is needed because textures can be created on the background GL
+ * context while the main context is rendering. */
+static std::map<uintptr_t, TextureState> g_TextureStates;
+static std::mutex g_TextureStatesMutex;
+
+/* Bindings are context-local.  Concurrent rendering uses a separate context
+ * on a separate thread, so keep this cache thread-local. */
+static thread_local std::array<uintptr_t, NUM_TextureUnit> g_BoundTextures{};
+
+static void RegisterTexture(uintptr_t handle, bool hasMipmaps) {
+  if (handle == 0) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+  g_TextureStates.erase(handle);
+  g_TextureStates.emplace(handle, TextureState(hasMipmaps));
+}
+
+static void ForgetTexture(uintptr_t handle) {
+  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+  g_TextureStates.erase(handle);
+  for (uintptr_t& bound : g_BoundTextures) {
+    if (bound == handle) {
+      bound = 0;
+    }
+  }
+}
+
+static void ForgetAllTextures() {
+  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+  g_TextureStates.clear();
+  g_BoundTextures.fill(0);
+}
 
 static LowLevelWindow* g_pWind;
 
@@ -594,7 +644,10 @@ std::string RageDisplay_Legacy::Init(
   return std::string();
 }
 
-RageDisplay_Legacy::~RageDisplay_Legacy() { delete g_pWind; }
+RageDisplay_Legacy::~RageDisplay_Legacy() {
+  ForgetAllTextures();
+  delete g_pWind;
+}
 
 void RageDisplay_Legacy::GetDisplaySpecs(DisplaySpecs& out) const {
   out.clear();
@@ -823,6 +876,7 @@ std::string RageDisplay_Legacy::TryVideoMode(
       delete rt.second;
     }
     g_mapRenderTargets.clear();
+    ForgetAllTextures();
 
     /* Recreate all vertex buffers. */
     InvalidateObjects();
@@ -1745,6 +1799,8 @@ void RageDisplay_Legacy::SetTexture(TextureUnit tu, uintptr_t iTexture) {
     return;
   }
 
+  g_BoundTextures[static_cast<size_t>(tu)] = iTexture;
+
   if (iTexture) {
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(iTexture));
@@ -1795,11 +1851,51 @@ void RageDisplay_Legacy::SetTextureMode(TextureUnit tu, TextureMode tm) {
 }
 
 void RageDisplay_Legacy::SetTextureFiltering(TextureUnit tu, bool b) {
-  glTexParameteri(
-      GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, b ? GL_LINEAR : GL_NEAREST);
+  if (!SetTextureUnit(tu)) {
+    return;
+  }
 
-  GLint iMinFilter;
-  if (b) {
+  const uintptr_t texture = g_BoundTextures[static_cast<size_t>(tu)];
+  if (texture == 0) {
+    /* SetTexture disables GL_TEXTURE_2D for this unit.  Texture parameters on
+     * the default texture object cannot affect rendering, so do not query or
+     * mutate them. */
+    StatsTextureFiltering(false, false, false);
+    return;
+  }
+
+  const GLint magFilter = b ? GL_LINEAR : GL_NEAREST;
+  GLint minFilter = GL_NEAREST;
+  bool setMagFilter = true;
+  bool setMinFilter = true;
+  bool knownTexture = false;
+
+  {
+    std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+    const auto it = g_TextureStates.find(texture);
+    if (it != g_TextureStates.end()) {
+      knownTexture = true;
+      if (b) {
+        if (it->second.hasMipmaps) {
+          minFilter = g_pWind->GetActualVideoModeParams().bTrilinearFiltering
+                          ? GL_LINEAR_MIPMAP_LINEAR
+                          : GL_LINEAR_MIPMAP_NEAREST;
+        } else {
+          minFilter = GL_LINEAR;
+        }
+      }
+
+      setMagFilter = it->second.magFilter != magFilter;
+      setMinFilter = it->second.minFilter != minFilter;
+      it->second.magFilter = magFilter;
+      it->second.minFilter = minFilter;
+    }
+  }
+
+  /* Preserve the old behavior for texture handles created outside this
+   * renderer.  Textures created by CreateTexture and CreateRenderTarget never
+   * take this path. */
+  if (!knownTexture && b) {
     GLint iWidth1 = -1;
     GLint iWidth2 = -1;
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &iWidth1);
@@ -1807,18 +1903,22 @@ void RageDisplay_Legacy::SetTextureFiltering(TextureUnit tu, bool b) {
     if (iWidth1 > 1 && iWidth2 != 0) {
       /* Mipmaps are enabled. */
       if (g_pWind->GetActualVideoModeParams().bTrilinearFiltering) {
-        iMinFilter = GL_LINEAR_MIPMAP_LINEAR;
+        minFilter = GL_LINEAR_MIPMAP_LINEAR;
       } else {
-        iMinFilter = GL_LINEAR_MIPMAP_NEAREST;
+        minFilter = GL_LINEAR_MIPMAP_NEAREST;
       }
     } else {
-      iMinFilter = GL_LINEAR;
+      minFilter = GL_LINEAR;
     }
-  } else {
-    iMinFilter = GL_NEAREST;
   }
 
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, iMinFilter);
+  if (setMagFilter) {
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+  }
+  if (setMinFilter) {
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
+  }
+  StatsTextureFiltering(true, knownTexture, setMagFilter || setMinFilter);
 }
 
 void RageDisplay_Legacy::SetEffectMode(EffectMode effect) {
@@ -2041,9 +2141,26 @@ void RageDisplay_Legacy::SetTextureWrapping(TextureUnit tu, bool b) {
   /* This should be per-texture-unit state, but it's per-texture state in
    * OpenGl, so we'll behave incorrectly if the same texture is used in more
    * than one texture unit simultaneously with different wrapping. */
-  SetTextureUnit(tu);
+  if (!SetTextureUnit(tu)) {
+    return;
+  }
 
-  GLenum mode = b ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+  const GLint mode = b ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+  const uintptr_t texture = g_BoundTextures[static_cast<size_t>(tu)];
+  bool setWrapping = true;
+  {
+    std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+    const auto it = g_TextureStates.find(texture);
+    if (it != g_TextureStates.end()) {
+      setWrapping = it->second.wrapMode != mode;
+      it->second.wrapMode = mode;
+    }
+  }
+
+  if (!setWrapping) {
+    return;
+  }
+
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, mode);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, mode);
 }
@@ -2142,6 +2259,7 @@ void RageDisplay_Legacy::EndConcurrentRenderingMainThread() {
 }
 
 void RageDisplay_Legacy::BeginConcurrentRendering() {
+  g_BoundTextures.fill(0);
   g_pWind->BeginConcurrentRendering();
   RageDisplay::BeginConcurrentRendering();
 }
@@ -2158,9 +2276,11 @@ void RageDisplay_Legacy::DeleteTexture(uintptr_t iTexture) {
   if (g_mapRenderTargets.find(iTexture) != g_mapRenderTargets.end()) {
     delete g_mapRenderTargets[iTexture];
     g_mapRenderTargets.erase(iTexture);
+    ForgetTexture(iTexture);
     return;
   }
 
+  ForgetTexture(iTexture);
   DebugFlushGLErrors();
   glDeleteTextures(1, reinterpret_cast<GLuint*>(&iTexture));
   DebugAssertNoGLError();
@@ -2296,9 +2416,6 @@ uintptr_t RageDisplay_Legacy::CreateTexture(
         fLargestSupportedAnisotropy);
   }
 
-  SetTextureFiltering(TextureUnit_1, true);
-  SetTextureWrapping(TextureUnit_1, false);
-
   glPixelStorei(
       GL_UNPACK_ROW_LENGTH, pImg->pitch / pImg->format->BytesPerPixel);
 
@@ -2345,6 +2462,11 @@ uintptr_t RageDisplay_Legacy::CreateTexture(
   if (bGenerateMipMaps) {
     glGenerateMipmap(GL_TEXTURE_2D);
   }
+
+  RegisterTexture(iTexHandle, bGenerateMipMaps);
+  g_BoundTextures[static_cast<size_t>(TextureUnit_1)] = iTexHandle;
+  SetTextureFiltering(TextureUnit_1, true);
+  SetTextureWrapping(TextureUnit_1, false);
 
   DebugAssertNoGLError();
 
@@ -2660,6 +2782,7 @@ uintptr_t RageDisplay_Legacy::CreateRenderTarget(
 
   ASSERT(g_mapRenderTargets.find(iTexture) == g_mapRenderTargets.end());
   g_mapRenderTargets[iTexture] = pTarget;
+  RegisterTexture(iTexture, false);
   return iTexture;
 }
 
