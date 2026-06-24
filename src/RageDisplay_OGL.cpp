@@ -1,21 +1,25 @@
 #include "RageDisplay_OGL.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "Actor.h"
+#include "Caching/OpenGLStateCache.h"
 #include "DisplaySpec.h"
 #include "EnumHelper.h"
 #include "LocalizedString.h"
 #include "ModelTypes.h"
+#include "Preference.h"
 #include "RageDisplay.h"
 #include "RageDisplay_OGL_Helpers.h"
 #include "RageException.h"
@@ -70,6 +74,12 @@ static int g_gluVersion;
 
 static int g_iMaxTextureUnits = 0;
 
+// Limit VSync rendering to one submitted GPU frame.  Drivers that let
+// SwapBuffers return before rendering completes otherwise tend to defer the
+// wait until an arbitrary draw call in the following frame.
+static Preference<bool> g_bOpenGLFramePacing("OpenGLFramePacing", true);
+static constexpr GLuint64 FRAME_PACING_FENCE_TIMEOUT_NS = 100000000ULL;
+
 /* We don't actually use normals (we don't turn on lighting), there's just
  * no GL_T2F_C4F_V3F. */
 static const GLenum RageSpriteVertexFormat = GL_T2F_C4F_N3F_V3F;
@@ -79,6 +89,58 @@ static GLhandleARB g_bTextureMatrixShader = 0;
 
 static std::map<uintptr_t, RenderTarget*> g_mapRenderTargets;
 static RenderTarget* g_pCurrentRenderTarget = nullptr;
+
+struct TextureState {
+  explicit TextureState(bool hasMipmaps)
+      : hasMipmaps(hasMipmaps) {}
+
+  bool hasMipmaps;
+  GLint minFilter = -1;
+  GLint magFilter = -1;
+  GLint wrapMode = -1;
+};
+
+/* Texture filtering is selected for every textured actor.  Keep the texture
+ * properties that determine that selection on the CPU instead of querying GL
+ * while drawing; glGetTexLevelParameteriv can synchronize with the driver.
+ * The mutex is needed because textures can be created on the background GL
+ * context while the main context is rendering. */
+static std::map<uintptr_t, TextureState> g_TextureStates;
+static std::mutex g_TextureStatesMutex;
+
+/* Bindings are context-local.  Concurrent rendering uses a separate context
+ * on a separate thread, so keep this cache thread-local. */
+static thread_local std::array<uintptr_t, NUM_TextureUnit> g_BoundTextures{};
+
+static void InvalidateRenderStateCache() {
+  GetOpenGLStateCache().InvalidateAll();
+}
+
+static void RegisterTexture(uintptr_t handle, bool hasMipmaps) {
+  if (handle == 0) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+  g_TextureStates.erase(handle);
+  g_TextureStates.emplace(handle, TextureState(hasMipmaps));
+}
+
+static void ForgetTexture(uintptr_t handle) {
+  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+  g_TextureStates.erase(handle);
+  for (uintptr_t& bound : g_BoundTextures) {
+    if (bound == handle) {
+      bound = 0;
+    }
+  }
+}
+
+static void ForgetAllTextures() {
+  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+  g_TextureStates.clear();
+  g_BoundTextures.fill(0);
+}
 
 static LowLevelWindow* g_pWind;
 
@@ -261,6 +323,8 @@ RageDisplay_Legacy::RageDisplay_Legacy() {
   g_pWind = nullptr;
   g_bTextureMatrixShader = 0;
   offscreenRenderTarget = nullptr;
+  framePacingFence = nullptr;
+  framePacingSupported = false;
 }
 
 std::string GetInfoLog(GLhandleARB h) {
@@ -593,7 +657,58 @@ std::string RageDisplay_Legacy::Init(
   return std::string();
 }
 
-RageDisplay_Legacy::~RageDisplay_Legacy() { delete g_pWind; }
+RageDisplay_Legacy::~RageDisplay_Legacy() {
+  ClearFramePacingFence();
+  ForgetAllTextures();
+  delete g_pWind;
+}
+
+void RageDisplay_Legacy::ClearFramePacingFence() {
+  if (framePacingFence == nullptr) {
+    return;
+  }
+
+  glDeleteSync(static_cast<GLsync>(framePacingFence));
+  framePacingFence = nullptr;
+}
+
+void RageDisplay_Legacy::WaitForFramePacingFence() {
+  if (framePacingFence == nullptr) {
+    return;
+  }
+
+  GLsync fence = static_cast<GLsync>(framePacingFence);
+  framePacingFence = nullptr;
+  const GLenum result = glClientWaitSync(
+      fence, GL_SYNC_FLUSH_COMMANDS_BIT, FRAME_PACING_FENCE_TIMEOUT_NS);
+  glDeleteSync(fence);
+
+  if (result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED) {
+    return;
+  }
+
+  framePacingSupported = false;
+  const std::string resultName =
+      RageDisplay_Legacy_Helpers::GLToString(result);
+  LOG->Warn(
+      "OpenGL frame pacing disabled after fence wait returned %s",
+      resultName.c_str());
+}
+
+void RageDisplay_Legacy::InsertFramePacingFence() {
+  if (!framePacingSupported || !g_bOpenGLFramePacing.Get() ||
+      !GetActualVideoModeParams().vsync) {
+    return;
+  }
+
+  GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+  if (fence == nullptr) {
+    framePacingSupported = false;
+    LOG->Warn("OpenGL frame pacing disabled because glFenceSync failed");
+    return;
+  }
+  framePacingFence = fence;
+}
 
 void RageDisplay_Legacy::GetDisplaySpecs(DisplaySpecs& out) const {
   out.clear();
@@ -799,6 +914,8 @@ std::string RageDisplay_Legacy::TryVideoMode(
   // LOG->Warn( "RageDisplay_Legacy::TryVideoMode( %d, %d, %d, %d, %d, %d )",
   // p.windowed, p.width, p.height, p.bpp, p.rate, p.vsync );
 
+  ClearFramePacingFence();
+
   std::string err;
   err = g_pWind->TryVideoMode(p, bNewDeviceOut);
   if (err != "") {
@@ -808,6 +925,10 @@ std::string RageDisplay_Legacy::TryVideoMode(
   /* Now that we've initialized, we can search for extensions.  Do this before
    * InvalidateObjects, since AllocateBuffers needs it. */
   SetupExtensions();
+  InvalidateRenderStateCache();
+  framePacingSupported =
+      (GLEW_VERSION_3_2 || GLEW_ARB_sync) && glFenceSync != nullptr &&
+      glClientWaitSync != nullptr && glDeleteSync != nullptr;
 
   if (bNewDeviceOut) {
     /* We have a new OpenGL context, so we have to tell our textures that
@@ -822,6 +943,7 @@ std::string RageDisplay_Legacy::TryVideoMode(
       delete rt.second;
     }
     g_mapRenderTargets.clear();
+    ForgetAllTextures();
 
     /* Recreate all vertex buffers. */
     InvalidateObjects();
@@ -867,6 +989,15 @@ int RageDisplay_Legacy::GetMaxTextureSize() const {
 }
 
 bool RageDisplay_Legacy::BeginFrame() {
+  if (framePacingFence != nullptr) {
+    if (framePacingSupported && g_bOpenGLFramePacing.Get() &&
+        GetActualVideoModeParams().vsync) {
+      WaitForFramePacingFence();
+    } else {
+      ClearFramePacingFence();
+    }
+  }
+
   /* We do this in here, rather than ResolutionChanged, or we won't update the
    * viewport for the concurrent rendering context. */
   int fWidth = g_pWind->GetActualVideoModeParams().windowWidth;
@@ -906,19 +1037,22 @@ void RageDisplay_Legacy::EndFrame() {
   }
 
   FrameLimitBeforeVsync();
+  InsertFramePacingFence();
   g_pWind->SwapBuffers();
   FrameLimitAfterVsync();
 
-  // Some would advise against glFinish(), ever. Those people don't realize
-  // the degree of freedom GL hosts are permitted in queueing commands.
-  // If left to its own devices, the host could lag behind several frames' worth
-  // of commands.
-  // glFlush() only forces the host to not wait to execute all commands
-  // sent so far; it does NOT block on those commands until they finish.
-  // glFinish() blocks. We WANT to block. Why? This puts the engine state
-  // reflected by the next frame as close as possible to the on-screen
-  // appearance of that frame.
-  glFinish();
+  if (!GetActualVideoModeParams().vsync) {
+    // Some would advise against glFinish(), ever. Those people don't realize
+    // the degree of freedom GL hosts are permitted in queueing commands.
+    // If left to its own devices, the host could lag behind several frames'
+    // worth of commands.
+    // glFlush() only forces the host to not wait to execute all commands
+    // sent so far; it does NOT block on those commands until they finish.
+    // glFinish() blocks. We WANT to block. Why? This puts the engine state
+    // reflected by the next frame as close as possible to the on-screen
+    // appearance of that frame.
+    glFinish();
+  }
 
   g_pWind->Update();
 
@@ -1674,7 +1808,7 @@ static bool SetTextureUnit(TextureUnit tu) {
   if ((int)tu > g_iMaxTextureUnits) {
     return false;
   }
-  glActiveTextureARB(enum_add2(GL_TEXTURE0_ARB, tu));
+  GetOpenGLStateCache().SetActiveTextureUnit(tu);
   return true;
 }
 
@@ -1685,7 +1819,7 @@ void RageDisplay_Legacy::ClearAllTextures() {
   // HACK:  Reset the active texture to 0.
   // TODO:  Change all texture functions to take a stage number.
   if (GLEW_ARB_multitexture) {
-    glActiveTextureARB(GL_TEXTURE0_ARB);
+    SetTextureUnit(TextureUnit_1);
   }
 }
 
@@ -1702,6 +1836,8 @@ void RageDisplay_Legacy::SetTexture(TextureUnit tu, uintptr_t iTexture) {
     return;
   }
 
+  g_BoundTextures[static_cast<size_t>(tu)] = iTexture;
+
   if (iTexture) {
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(iTexture));
@@ -1714,49 +1850,54 @@ void RageDisplay_Legacy::SetTextureMode(TextureUnit tu, TextureMode tm) {
   if (!SetTextureUnit(tu)) {
     return;
   }
-
-  switch (tm) {
-    case TextureMode_Modulate:
-      glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-      break;
-    case TextureMode_Add:
-      glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_ADD);
-      break;
-    case TextureMode_Glow:
-      // the below function is glowmode,brighten:
-      if (!GLEW_ARB_texture_env_combine && !GLEW_EXT_texture_env_combine) {
-        /* This is changing blend state, instead of texture state, which
-         * isn't great, but it's better than doing nothing. */
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        return;
-      }
-
-      // and this is glowmode,whiten:
-      // Source color is the diffuse color only:
-      glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE_EXT);
-      glTexEnvi(GL_TEXTURE_ENV, GLenum(GL_COMBINE_RGB_EXT), GL_REPLACE);
-      glTexEnvi(
-          GL_TEXTURE_ENV, GLenum(GL_SOURCE0_RGB_EXT), GL_PRIMARY_COLOR_EXT);
-
-      // Source alpha is texture alpha * diffuse alpha:
-      glTexEnvi(GL_TEXTURE_ENV, GLenum(GL_COMBINE_ALPHA_EXT), GL_MODULATE);
-      glTexEnvi(GL_TEXTURE_ENV, GLenum(GL_OPERAND0_ALPHA_EXT), GL_SRC_ALPHA);
-      glTexEnvi(
-          GL_TEXTURE_ENV, GLenum(GL_SOURCE0_ALPHA_EXT), GL_PRIMARY_COLOR_EXT);
-      glTexEnvi(GL_TEXTURE_ENV, GLenum(GL_OPERAND1_ALPHA_EXT), GL_SRC_ALPHA);
-      glTexEnvi(GL_TEXTURE_ENV, GLenum(GL_SOURCE1_ALPHA_EXT), GL_TEXTURE);
-      break;
-    default:
-      break;
-  }
+  GetOpenGLStateCache().SetTextureMode(tu, tm);
 }
 
 void RageDisplay_Legacy::SetTextureFiltering(TextureUnit tu, bool b) {
-  glTexParameteri(
-      GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, b ? GL_LINEAR : GL_NEAREST);
+  if (!SetTextureUnit(tu)) {
+    return;
+  }
 
-  GLint iMinFilter;
-  if (b) {
+  const uintptr_t texture = g_BoundTextures[static_cast<size_t>(tu)];
+  if (texture == 0) {
+    /* SetTexture disables GL_TEXTURE_2D for this unit.  Texture parameters on
+     * the default texture object cannot affect rendering, so do not query or
+     * mutate them. */
+    return;
+  }
+
+  const GLint magFilter = b ? GL_LINEAR : GL_NEAREST;
+  GLint minFilter = GL_NEAREST;
+  bool setMagFilter = true;
+  bool setMinFilter = true;
+  bool knownTexture = false;
+
+  {
+    std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+    const auto it = g_TextureStates.find(texture);
+    if (it != g_TextureStates.end()) {
+      knownTexture = true;
+      if (b) {
+        if (it->second.hasMipmaps) {
+          minFilter = g_pWind->GetActualVideoModeParams().bTrilinearFiltering
+                          ? GL_LINEAR_MIPMAP_LINEAR
+                          : GL_LINEAR_MIPMAP_NEAREST;
+        } else {
+          minFilter = GL_LINEAR;
+        }
+      }
+
+      setMagFilter = it->second.magFilter != magFilter;
+      setMinFilter = it->second.minFilter != minFilter;
+      it->second.magFilter = magFilter;
+      it->second.minFilter = minFilter;
+    }
+  }
+
+  /* Preserve the old behavior for texture handles created outside this
+   * renderer.  Textures created by CreateTexture and CreateRenderTarget never
+   * take this path. */
+  if (!knownTexture && b) {
     GLint iWidth1 = -1;
     GLint iWidth2 = -1;
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &iWidth1);
@@ -1764,18 +1905,21 @@ void RageDisplay_Legacy::SetTextureFiltering(TextureUnit tu, bool b) {
     if (iWidth1 > 1 && iWidth2 != 0) {
       /* Mipmaps are enabled. */
       if (g_pWind->GetActualVideoModeParams().bTrilinearFiltering) {
-        iMinFilter = GL_LINEAR_MIPMAP_LINEAR;
+        minFilter = GL_LINEAR_MIPMAP_LINEAR;
       } else {
-        iMinFilter = GL_LINEAR_MIPMAP_NEAREST;
+        minFilter = GL_LINEAR_MIPMAP_NEAREST;
       }
     } else {
-      iMinFilter = GL_LINEAR;
+      minFilter = GL_LINEAR;
     }
-  } else {
-    iMinFilter = GL_NEAREST;
   }
 
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, iMinFilter);
+  if (setMagFilter) {
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+  }
+  if (setMinFilter) {
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
+  }
 }
 
 void RageDisplay_Legacy::SetEffectMode(EffectMode effect) {
@@ -1868,97 +2012,15 @@ bool RageDisplay_Legacy::IsEffectModeSupported(EffectMode effect) {
 }
 
 void RageDisplay_Legacy::SetBlendMode(BlendMode mode) {
-  glEnable(GL_BLEND);
-
-  if (glBlendEquation != nullptr) {
-    if (mode == BLEND_INVERT_DEST) {
-      glBlendEquation(GL_FUNC_SUBTRACT);
-    } else if (mode == BLEND_SUBTRACT) {
-      glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
-    } else {
-      glBlendEquation(GL_FUNC_ADD);
-    }
-  }
-
-  int iSourceRGB, iDestRGB;
-  int iSourceAlpha = GL_ONE, iDestAlpha = GL_ONE_MINUS_SRC_ALPHA;
-  switch (mode) {
-    case BLEND_NORMAL:
-      iSourceRGB = GL_SRC_ALPHA;
-      iDestRGB = GL_ONE_MINUS_SRC_ALPHA;
-      break;
-    case BLEND_ADD:
-      iSourceRGB = GL_SRC_ALPHA;
-      iDestRGB = GL_ONE;
-      break;
-    case BLEND_SUBTRACT:
-      iSourceRGB = GL_SRC_ALPHA;
-      iDestRGB = GL_ONE_MINUS_SRC_ALPHA;
-      break;
-    case BLEND_MODULATE:
-      iSourceRGB = GL_ZERO;
-      iDestRGB = GL_SRC_COLOR;
-      break;
-    case BLEND_COPY_SRC:
-      iSourceRGB = GL_ONE;
-      iDestRGB = GL_ZERO;
-      iSourceAlpha = GL_ONE;
-      iDestAlpha = GL_ZERO;
-      break;
-    case BLEND_ALPHA_MASK:
-      iSourceRGB = GL_ZERO;
-      iDestRGB = GL_ONE;
-      iSourceAlpha = GL_ZERO;
-      iDestAlpha = GL_SRC_ALPHA;
-      break;
-    case BLEND_ALPHA_KNOCK_OUT:
-      iSourceRGB = GL_ZERO;
-      iDestRGB = GL_ONE;
-      iSourceAlpha = GL_ZERO;
-      iDestAlpha = GL_ONE_MINUS_SRC_ALPHA;
-      break;
-    case BLEND_ALPHA_MULTIPLY:
-      iSourceRGB = GL_SRC_ALPHA;
-      iDestRGB = GL_ZERO;
-      break;
-    case BLEND_WEIGHTED_MULTIPLY:
-      /* output = 2*(dst*src).  0.5,0.5,0.5 is identity; darker colors darken
-       * the image, and brighter colors lighten the image. */
-      iSourceRGB = GL_DST_COLOR;
-      iDestRGB = GL_SRC_COLOR;
-      break;
-    case BLEND_INVERT_DEST:
-      /* out = src - dst.  The source color should almost always be #FFFFFF, to
-       * make it "1 - dst". */
-      iSourceRGB = GL_ONE;
-      iDestRGB = GL_ONE;
-      break;
-    case BLEND_NO_EFFECT:
-      iSourceRGB = GL_ZERO;
-      iDestRGB = GL_ONE;
-      iSourceAlpha = GL_ZERO;
-      iDestAlpha = GL_ONE;
-      break;
-      DEFAULT_FAIL(mode);
-  }
-
-  if (GLEW_EXT_blend_equation_separate) {
-    glBlendFuncSeparateEXT(iSourceRGB, iDestRGB, iSourceAlpha, iDestAlpha);
-  } else {
-    glBlendFunc(iSourceRGB, iDestRGB);
-  }
+  GetOpenGLStateCache().SetBlendMode(mode);
 }
 
 bool RageDisplay_Legacy::IsZWriteEnabled() const {
-  bool a;
-  glGetBooleanv(GL_DEPTH_WRITEMASK, (unsigned char*)&a);
-  return a;
+  return GetOpenGLStateCache().IsZWriteEnabled();
 }
 
 bool RageDisplay_Legacy::IsZTestEnabled() const {
-  GLenum a;
-  glGetIntegerv(GL_DEPTH_FUNC, (GLint*)&a);
-  return a != GL_ALWAYS;
+  return GetOpenGLStateCache().IsZTestEnabled();
 }
 
 void RageDisplay_Legacy::ClearZBuffer() {
@@ -1968,39 +2030,42 @@ void RageDisplay_Legacy::ClearZBuffer() {
   SetZWrite(write);
 }
 
-void RageDisplay_Legacy::SetZWrite(bool b) { glDepthMask(b); }
+void RageDisplay_Legacy::SetZWrite(bool b) {
+  GetOpenGLStateCache().SetZWrite(b);
+}
 
 void RageDisplay_Legacy::SetZBias(float f) {
-  float fNear = SCALE(f, 0.0f, 1.0f, 0.05f, 0.0f);
-  float fFar = SCALE(f, 0.0f, 1.0f, 1.0f, 0.95f);
-
-  glDepthRange(fNear, fFar);
+  GetOpenGLStateCache().SetZBias(f);
 }
 
 void RageDisplay_Legacy::SetZTestMode(ZTestMode mode) {
-  glEnable(GL_DEPTH_TEST);
-  switch (mode) {
-    case ZTEST_OFF:
-      glDepthFunc(GL_ALWAYS);
-      break;
-    case ZTEST_WRITE_ON_PASS:
-      glDepthFunc(GL_LEQUAL);
-      break;
-    case ZTEST_WRITE_ON_FAIL:
-      glDepthFunc(GL_GREATER);
-      break;
-    default:
-      FAIL_M(ssprintf("Invalid ZTestMode: %i", mode));
-  }
+  GetOpenGLStateCache().SetZTestMode(mode);
 }
 
 void RageDisplay_Legacy::SetTextureWrapping(TextureUnit tu, bool b) {
   /* This should be per-texture-unit state, but it's per-texture state in
    * OpenGl, so we'll behave incorrectly if the same texture is used in more
    * than one texture unit simultaneously with different wrapping. */
-  SetTextureUnit(tu);
+  if (!SetTextureUnit(tu)) {
+    return;
+  }
 
-  GLenum mode = b ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+  const GLint mode = b ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+  const uintptr_t texture = g_BoundTextures[static_cast<size_t>(tu)];
+  bool setWrapping = true;
+  {
+    std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
+    const auto it = g_TextureStates.find(texture);
+    if (it != g_TextureStates.end()) {
+      setWrapping = it->second.wrapMode != mode;
+      it->second.wrapMode = mode;
+    }
+  }
+
+  if (!setWrapping) {
+    return;
+  }
+
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, mode);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, mode);
 }
@@ -2013,8 +2078,7 @@ void RageDisplay_Legacy::SetMaterial(
   // want Models to have basic color and transparency.
   // We can do this fake lighting by setting the vertex color.
   // XXX: unintended: SetLighting must be called before SetMaterial
-  GLboolean bLighting;
-  glGetBooleanv(GL_LIGHTING, &bLighting);
+  const bool bLighting = GetOpenGLStateCache().IsLightingEnabled();
 
   if (bLighting) {
     glMaterialfv(GL_FRONT, GL_EMISSION, emissive);
@@ -2032,11 +2096,7 @@ void RageDisplay_Legacy::SetMaterial(
 }
 
 void RageDisplay_Legacy::SetLighting(bool b) {
-  if (b) {
-    glEnable(GL_LIGHTING);
-  } else {
-    glDisable(GL_LIGHTING);
-  }
+  GetOpenGLStateCache().SetLighting(b);
 }
 
 void RageDisplay_Legacy::SetLightOff(int index) {
@@ -2062,22 +2122,7 @@ void RageDisplay_Legacy::SetLightDirectional(
 }
 
 void RageDisplay_Legacy::SetCullMode(CullMode mode) {
-  if (mode != CULL_NONE) {
-    glEnable(GL_CULL_FACE);
-  }
-  switch (mode) {
-    case CULL_BACK:
-      glCullFace(GL_BACK);
-      break;
-    case CULL_FRONT:
-      glCullFace(GL_FRONT);
-      break;
-    case CULL_NONE:
-      glDisable(GL_CULL_FACE);
-      break;
-    default:
-      FAIL_M(ssprintf("Invalid CullMode: %i", mode));
-  }
+  GetOpenGLStateCache().SetCullMode(mode);
 }
 
 const RageDisplay::RagePixelFormatDesc* RageDisplay_Legacy::GetPixelFormatDesc(
@@ -2092,19 +2137,24 @@ bool RageDisplay_Legacy::SupportsThreadedRendering() {
 
 void RageDisplay_Legacy::BeginConcurrentRenderingMainThread() {
   g_pWind->BeginConcurrentRenderingMainThread();
+  InvalidateRenderStateCache();
 }
 
 void RageDisplay_Legacy::EndConcurrentRenderingMainThread() {
   g_pWind->EndConcurrentRenderingMainThread();
+  InvalidateRenderStateCache();
 }
 
 void RageDisplay_Legacy::BeginConcurrentRendering() {
+  g_BoundTextures.fill(0);
   g_pWind->BeginConcurrentRendering();
+  InvalidateRenderStateCache();
   RageDisplay::BeginConcurrentRendering();
 }
 
 void RageDisplay_Legacy::EndConcurrentRendering() {
   g_pWind->EndConcurrentRendering();
+  InvalidateRenderStateCache();
 }
 
 void RageDisplay_Legacy::DeleteTexture(uintptr_t iTexture) {
@@ -2115,9 +2165,11 @@ void RageDisplay_Legacy::DeleteTexture(uintptr_t iTexture) {
   if (g_mapRenderTargets.find(iTexture) != g_mapRenderTargets.end()) {
     delete g_mapRenderTargets[iTexture];
     g_mapRenderTargets.erase(iTexture);
+    ForgetTexture(iTexture);
     return;
   }
 
+  ForgetTexture(iTexture);
   DebugFlushGLErrors();
   glDeleteTextures(1, reinterpret_cast<GLuint*>(&iTexture));
   DebugAssertNoGLError();
@@ -2253,9 +2305,6 @@ uintptr_t RageDisplay_Legacy::CreateTexture(
         fLargestSupportedAnisotropy);
   }
 
-  SetTextureFiltering(TextureUnit_1, true);
-  SetTextureWrapping(TextureUnit_1, false);
-
   glPixelStorei(
       GL_UNPACK_ROW_LENGTH, pImg->pitch / pImg->format->BytesPerPixel);
 
@@ -2302,6 +2351,11 @@ uintptr_t RageDisplay_Legacy::CreateTexture(
   if (bGenerateMipMaps) {
     glGenerateMipmap(GL_TEXTURE_2D);
   }
+
+  RegisterTexture(iTexHandle, bGenerateMipMaps);
+  g_BoundTextures[static_cast<size_t>(TextureUnit_1)] = iTexHandle;
+  SetTextureFiltering(TextureUnit_1, true);
+  SetTextureWrapping(TextureUnit_1, false);
 
   DebugAssertNoGLError();
 
@@ -2617,6 +2671,7 @@ uintptr_t RageDisplay_Legacy::CreateRenderTarget(
 
   ASSERT(g_mapRenderTargets.find(iTexture) == g_mapRenderTargets.end());
   g_mapRenderTargets[iTexture] = pTarget;
+  RegisterTexture(iTexture, false);
   return iTexture;
 }
 
@@ -2647,6 +2702,7 @@ void RageDisplay_Legacy::SetRenderTarget(
 
     if (g_pCurrentRenderTarget) {
       g_pCurrentRenderTarget->FinishRenderingTo();
+      InvalidateRenderStateCache();
     }
     g_pCurrentRenderTarget = nullptr;
     return;
@@ -2661,6 +2717,7 @@ void RageDisplay_Legacy::SetRenderTarget(
   ASSERT(g_mapRenderTargets.find(iTexture) != g_mapRenderTargets.end());
   RenderTarget* pTarget = g_mapRenderTargets[iTexture];
   pTarget->StartRenderingTo();
+  InvalidateRenderStateCache();
   g_pCurrentRenderTarget = pTarget;
 
   /* Set the viewport to the size of the render target. */
@@ -2750,13 +2807,7 @@ std::string RageDisplay_Legacy::GetTextureDiagnostics(
  * SetDefault call These kinds of functions is wasteful. -Colby
  */
 void RageDisplay_Legacy::SetAlphaTest(bool b) {
-  // Previously this was 0.01, rather than 0x01.
-  glAlphaFunc(GL_GREATER, 0.00390625 /* 1/256 */);
-  if (b) {
-    glEnable(GL_ALPHA_TEST);
-  } else {
-    glDisable(GL_ALPHA_TEST);
-  }
+  GetOpenGLStateCache().SetAlphaTest(b);
 }
 
 /*

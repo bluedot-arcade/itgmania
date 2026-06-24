@@ -138,7 +138,13 @@ class RageDisplay_Legacy : public RageDisplay {
   void SendCurrentMatrices();
 
  private:
+  void ClearFramePacingFence();
+  void WaitForFramePacingFence();
+  void InsertFramePacingFence();
+
   RageTextureRenderTarget* offscreenRenderTarget;
+  void* framePacingFence;
+  bool framePacingSupported;
 };
 
 #endif
