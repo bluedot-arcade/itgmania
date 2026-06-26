@@ -18,6 +18,7 @@ REGISTER_SOUND_DRIVER_CLASS2("WASAPI", WASAPI);
 
 RageSoundDriver_WASAPI::RageSoundDriver_WASAPI()
     : m_iSampleRate(0),
+      m_iChannels(0),
       m_iBufferSizeFrames(0),
       m_bFloat(true),
       m_pAudioClient(nullptr),
@@ -111,7 +112,7 @@ bool RageSoundDriver_WASAPI::InitWASAPI(std::string& sError) {
   }
 
   m_iSampleRate = pwfx->nSamplesPerSec;
-  int iChannels = pwfx->nChannels;
+  m_iChannels = pwfx->nChannels;
 
   if (pwfx->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
     sError = ssprintf("Unsupported format tag: %d", pwfx->wFormatTag);
@@ -197,7 +198,7 @@ bool RageSoundDriver_WASAPI::InitWASAPI(std::string& sError) {
 
   LOG->Info(
       "WASAPI: Shared mode, %d channels, %d Hz, %s, buffer size %d frames",
-      iChannels, m_iSampleRate, m_bFloat ? "Float" : "Int16",
+      m_iChannels, m_iSampleRate, m_bFloat ? "Float" : "Int16",
       m_iBufferSizeFrames);
 
   return true;
@@ -278,11 +279,46 @@ void RageSoundDriver_WASAPI::MixerThread() {
 
     int64_t iCurrentFrame = GetPosition();
 
-    if (m_bFloat) {
-      this->Mix((float*)pData, framesAvailable, iHardwareFrame, iCurrentFrame);
-    } else {
+    if (m_iChannels == 2) {
+      if (m_bFloat) {
+        this->Mix(
+            (float*)pData, framesAvailable, iHardwareFrame, iCurrentFrame);
+      } else {
+        this->Mix(
+            (int16_t*)pData, framesAvailable, iHardwareFrame, iCurrentFrame);
+      }
+    } else if (m_bFloat) {
+      m_vFloatMixBuffer.resize(framesAvailable * 2);
       this->Mix(
-          (int16_t*)pData, framesAvailable, iHardwareFrame, iCurrentFrame);
+          m_vFloatMixBuffer.data(), framesAvailable, iHardwareFrame,
+          iCurrentFrame);
+
+      float* out = reinterpret_cast<float*>(pData);
+      for (UINT32 frame = 0; frame < framesAvailable; ++frame) {
+        out[frame * m_iChannels] = m_vFloatMixBuffer[frame * 2];
+        if (m_iChannels > 1) {
+          out[frame * m_iChannels + 1] = m_vFloatMixBuffer[frame * 2 + 1];
+        }
+        for (int channel = 2; channel < m_iChannels; ++channel) {
+          out[frame * m_iChannels + channel] = 0.0f;
+        }
+      }
+    } else {
+      m_vInt16MixBuffer.resize(framesAvailable * 2);
+      this->Mix(
+          m_vInt16MixBuffer.data(), framesAvailable, iHardwareFrame,
+          iCurrentFrame);
+
+      int16_t* out = reinterpret_cast<int16_t*>(pData);
+      for (UINT32 frame = 0; frame < framesAvailable; ++frame) {
+        out[frame * m_iChannels] = m_vInt16MixBuffer[frame * 2];
+        if (m_iChannels > 1) {
+          out[frame * m_iChannels + 1] = m_vInt16MixBuffer[frame * 2 + 1];
+        }
+        for (int channel = 2; channel < m_iChannels; ++channel) {
+          out[frame * m_iChannels + channel] = 0;
+        }
+      }
     }
 
     hr = m_pRenderClient->ReleaseBuffer(framesAvailable, 0);

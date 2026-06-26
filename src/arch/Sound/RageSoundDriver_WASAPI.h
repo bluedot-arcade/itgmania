@@ -6,6 +6,7 @@
 // clang-format on
 
 #include <atomic>
+#include <vector>
 
 #include "RageSoundDriver.h"
 #include "RageThreads.h"
@@ -29,8 +30,11 @@ class RageSoundDriver_WASAPI : public RageSoundDriver {
 
  private:
   int m_iSampleRate;
+  int m_iChannels;
   UINT32 m_iBufferSizeFrames;
   bool m_bFloat;  // true if we are using float, false if 16-bit PCM
+  std::vector<float> m_vFloatMixBuffer;
+  std::vector<int16_t> m_vInt16MixBuffer;
 
   IAudioClient* m_pAudioClient;
   IAudioRenderClient* m_pRenderClient;
