@@ -1,13 +1,11 @@
 #include "RageDisplay_OGL.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
-#include <mutex>
 #include <set>
 #include <string>
 #include <utility>
@@ -15,6 +13,7 @@
 
 #include "Actor.h"
 #include "Caching/OpenGLStateCache.h"
+#include "Caching/OpenGLTextureStateCache.h"
 #include "DisplaySpec.h"
 #include "EnumHelper.h"
 #include "LocalizedString.h"
@@ -89,58 +88,6 @@ static GLhandleARB g_bTextureMatrixShader = 0;
 
 static std::map<uintptr_t, RenderTarget*> g_mapRenderTargets;
 static RenderTarget* g_pCurrentRenderTarget = nullptr;
-
-struct TextureState {
-  explicit TextureState(bool hasMipmaps)
-      : hasMipmaps(hasMipmaps) {}
-
-  bool hasMipmaps;
-  GLint minFilter = -1;
-  GLint magFilter = -1;
-  GLint wrapMode = -1;
-};
-
-/* Texture filtering is selected for every textured actor.  Keep the texture
- * properties that determine that selection on the CPU instead of querying GL
- * while drawing; glGetTexLevelParameteriv can synchronize with the driver.
- * The mutex is needed because textures can be created on the background GL
- * context while the main context is rendering. */
-static std::map<uintptr_t, TextureState> g_TextureStates;
-static std::mutex g_TextureStatesMutex;
-
-/* Bindings are context-local.  Concurrent rendering uses a separate context
- * on a separate thread, so keep this cache thread-local. */
-static thread_local std::array<uintptr_t, NUM_TextureUnit> g_BoundTextures{};
-
-static void InvalidateRenderStateCache() {
-  GetOpenGLStateCache().InvalidateAll();
-}
-
-static void RegisterTexture(uintptr_t handle, bool hasMipmaps) {
-  if (handle == 0) {
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
-  g_TextureStates.erase(handle);
-  g_TextureStates.emplace(handle, TextureState(hasMipmaps));
-}
-
-static void ForgetTexture(uintptr_t handle) {
-  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
-  g_TextureStates.erase(handle);
-  for (uintptr_t& bound : g_BoundTextures) {
-    if (bound == handle) {
-      bound = 0;
-    }
-  }
-}
-
-static void ForgetAllTextures() {
-  std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
-  g_TextureStates.clear();
-  g_BoundTextures.fill(0);
-}
 
 static LowLevelWindow* g_pWind;
 
@@ -308,8 +255,8 @@ static void FixLittleEndian() {
 
 static void TurnOffHardwareVBO() {
   if (GLEW_ARB_vertex_buffer_object) {
-    glBindBufferARB(GL_ARRAY_BUFFER_ARB, 0);
-    glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB, 0);
+    GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, 0);
+    GetOpenGLStateCache().BindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, 0);
   }
 }
 
@@ -659,7 +606,7 @@ std::string RageDisplay_Legacy::Init(
 
 RageDisplay_Legacy::~RageDisplay_Legacy() {
   ClearFramePacingFence();
-  ForgetAllTextures();
+  GetOpenGLTextureStateCache().ForgetAllTextures();
   delete g_pWind;
 }
 
@@ -925,7 +872,7 @@ std::string RageDisplay_Legacy::TryVideoMode(
   /* Now that we've initialized, we can search for extensions.  Do this before
    * InvalidateObjects, since AllocateBuffers needs it. */
   SetupExtensions();
-  InvalidateRenderStateCache();
+  GetOpenGLStateCache().InvalidateAll();
   framePacingSupported =
       (GLEW_VERSION_3_2 || GLEW_ARB_sync) && glFenceSync != nullptr &&
       glClientWaitSync != nullptr && glDeleteSync != nullptr;
@@ -943,7 +890,7 @@ std::string RageDisplay_Legacy::TryVideoMode(
       delete rt.second;
     }
     g_mapRenderTargets.clear();
-    ForgetAllTextures();
+    GetOpenGLTextureStateCache().ForgetAllTextures();
 
     /* Recreate all vertex buffers. */
     InvalidateObjects();
@@ -1003,9 +950,9 @@ bool RageDisplay_Legacy::BeginFrame() {
   int fWidth = g_pWind->GetActualVideoModeParams().windowWidth;
   int fHeight = g_pWind->GetActualVideoModeParams().windowHeight;
 
-  glViewport(0, 0, fWidth, fHeight);
+  GetOpenGLStateCache().SetViewport(0, 0, fWidth, fHeight);
 
-  glClearColor(0, 0, 0, 0);
+  GetOpenGLStateCache().SetClearColor(0, 0, 0, 0);
   SetZWrite(true);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -1135,23 +1082,23 @@ static void SetupVertices(const RageSpriteVertex v[], int iNumVerts) {
   if (bInterleaveColor) {
     const GLsizei stride = sizeof(RageSpriteVertex);
 
-    glEnableClientState(GL_VERTEX_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_VERTEX_ARRAY, true);
     glVertexPointer(3, GL_FLOAT, stride, &v[0].p);
 
-    glEnableClientState(GL_COLOR_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_COLOR_ARRAY, true);
     glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, stride, &v[0].c);
 
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_TEXTURE_COORD_ARRAY, true);
     glTexCoordPointer(2, GL_FLOAT, stride, &v[0].t);
 
     if (GLEW_ARB_multitexture) {
-      glClientActiveTextureARB(GL_TEXTURE1_ARB);
-      glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+      GetOpenGLStateCache().SetClientActiveTexture(GL_TEXTURE1_ARB);
+      GetOpenGLStateCache().SetClientState(GL_TEXTURE_COORD_ARRAY, true);
       glTexCoordPointer(2, GL_FLOAT, stride, &v[0].t);
-      glClientActiveTextureARB(GL_TEXTURE0_ARB);
+      GetOpenGLStateCache().SetClientActiveTexture(GL_TEXTURE0_ARB);
     }
 
-    glEnableClientState(GL_NORMAL_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_NORMAL_ARRAY, true);
     glNormalPointer(GL_FLOAT, stride, &v[0].n);
     return;
   }
@@ -1186,23 +1133,23 @@ static void SetupVertices(const RageSpriteVertex v[], int iNumVerts) {
     Normal[i * 3 + 1] = v[i].n[1];
     Normal[i * 3 + 2] = v[i].n[2];
   }
-  glEnableClientState(GL_VERTEX_ARRAY);
+  GetOpenGLStateCache().SetClientState(GL_VERTEX_ARRAY, true);
   glVertexPointer(3, GL_FLOAT, 0, Vertex);
 
-  glEnableClientState(GL_COLOR_ARRAY);
+  GetOpenGLStateCache().SetClientState(GL_COLOR_ARRAY, true);
   glColorPointer(4, GL_UNSIGNED_BYTE, 0, Color);
 
-  glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+  GetOpenGLStateCache().SetClientState(GL_TEXTURE_COORD_ARRAY, true);
   glTexCoordPointer(2, GL_FLOAT, 0, Texture);
 
   if (GLEW_ARB_multitexture) {
-    glClientActiveTextureARB(GL_TEXTURE1_ARB);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    GetOpenGLStateCache().SetClientActiveTexture(GL_TEXTURE1_ARB);
+    GetOpenGLStateCache().SetClientState(GL_TEXTURE_COORD_ARRAY, true);
     glTexCoordPointer(2, GL_FLOAT, 0, Texture);
-    glClientActiveTextureARB(GL_TEXTURE0_ARB);
+    GetOpenGLStateCache().SetClientActiveTexture(GL_TEXTURE0_ARB);
   }
 
-  glEnableClientState(GL_NORMAL_ARRAY);
+  GetOpenGLStateCache().SetClientState(GL_NORMAL_ARRAY, true);
   glNormalPointer(GL_FLOAT, 0, Normal);
 }
 
@@ -1215,17 +1162,36 @@ void RageDisplay_Legacy::SendCurrentMatrices() {
     RageMatrixScale(&flip, +1, -1, +1);
     RageMatrixMultiply(&projection, &flip, &projection);
   }
-  glMatrixMode(GL_PROJECTION);
+  GetOpenGLStateCache().SetMatrixMode(GL_PROJECTION);
   glLoadMatrixf((const float*)&projection);
 
   // OpenGL has just "modelView", whereas D3D has "world" and "view"
   RageMatrix modelView;
   RageMatrixMultiply(&modelView, GetViewTop(), GetWorldTop());
-  glMatrixMode(GL_MODELVIEW);
+  GetOpenGLStateCache().SetMatrixMode(GL_MODELVIEW);
   glLoadMatrixf((const float*)&modelView);
 
-  glMatrixMode(GL_TEXTURE);
+  GetOpenGLStateCache().SetMatrixMode(GL_TEXTURE);
   glLoadMatrixf((const float*)GetTextureTop());
+}
+
+RageMatrix RageDisplay_Legacy::GetTextureMatrixForDraw() const {
+  return *GetTextureTop();
+}
+
+RageMatrix RageDisplay_Legacy::GetModelViewMatrixForDraw() const {
+  RageMatrix mat;
+  RageMatrixMultiply(&mat, GetViewTop(), GetWorldTop());
+  return mat;
+}
+
+static RageMatrix GetTextureMatrixForDraw() {
+  return static_cast<RageDisplay_Legacy*>(DISPLAY)->GetTextureMatrixForDraw();
+}
+
+static bool IsTextureGenEnabledForDraw() {
+  return GetOpenGLStateCache().IsTextureGenEnabled(TextureUnit_1) ||
+         GetOpenGLStateCache().IsTextureGenEnabled(TextureUnit_2);
 }
 
 class RageCompiledGeometrySWOGL : public RageCompiledGeometry {
@@ -1273,23 +1239,22 @@ class RageCompiledGeometrySWOGL : public RageCompiledGeometry {
 
     const MeshInfo& meshInfo = m_vMeshInfo[iMeshIndex];
 
-    glEnableClientState(GL_VERTEX_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_VERTEX_ARRAY, true);
     glVertexPointer(3, GL_FLOAT, 0, &m_vPosition[0]);
 
-    glDisableClientState(GL_COLOR_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_COLOR_ARRAY, false);
 
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_TEXTURE_COORD_ARRAY, true);
     glTexCoordPointer(2, GL_FLOAT, 0, &m_vTexture[0]);
 
-    glEnableClientState(GL_NORMAL_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_NORMAL_ARRAY, true);
     glNormalPointer(GL_FLOAT, 0, &m_vNormal[0]);
 
     if (meshInfo.m_bNeedsTextureMatrixScale) {
       // Kill the texture translation.
       // XXX: Change me to scale the translation by the TextureTranslationScale
       // of the first vertex.
-      RageMatrix mat;
-      glGetFloatv(GL_TEXTURE_MATRIX, (float*)mat);
+      RageMatrix mat = GetTextureMatrixForDraw();
 
       /*
       for( int i=0; i<4; i++ )
@@ -1305,7 +1270,7 @@ class RageCompiledGeometrySWOGL : public RageCompiledGeometry {
       mat.m[3][1] = 0;
       mat.m[3][2] = 0;
 
-      glMatrixMode(GL_TEXTURE);
+      GetOpenGLStateCache().SetMatrixMode(GL_TEXTURE);
       glLoadMatrixf((const float*)mat);
     }
 
@@ -1419,28 +1384,28 @@ void RageCompiledGeometryHWOGL::AllocateBuffers() {
 void RageCompiledGeometryHWOGL::UploadData() {
   DebugFlushGLErrors();
 
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nPositions);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nPositions);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector3),
       &m_vPosition[0], GL_STATIC_DRAW_ARB);
   DebugAssertNoGLError();
 
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nTextureCoords);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nTextureCoords);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector2),
       &m_vTexture[0], GL_STATIC_DRAW_ARB);
   DebugAssertNoGLError();
 
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nNormals);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nNormals);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector3),
       &m_vNormal[0], GL_STATIC_DRAW_ARB);
   DebugAssertNoGLError();
 
-  glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB, m_nTriangles);
+  GetOpenGLStateCache().BindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, m_nTriangles);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ELEMENT_ARRAY_BUFFER_ARB, GetTotalTriangles() * sizeof(msTriangle),
@@ -1448,7 +1413,8 @@ void RageCompiledGeometryHWOGL::UploadData() {
   DebugAssertNoGLError();
 
   if (m_bAnyNeedsTextureMatrixScale) {
-    glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nTextureMatrixScale);
+    GetOpenGLStateCache().BindBuffer(
+        GL_ARRAY_BUFFER_ARB, m_nTextureMatrixScale);
     DebugAssertNoGLError();
     glBufferDataARB(
         GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector2),
@@ -1472,35 +1438,36 @@ void RageCompiledGeometryHWOGL::Allocate(const std::vector<msMesh>& vMeshes) {
   DebugFlushGLErrors();
 
   RageCompiledGeometrySWOGL::Allocate(vMeshes);
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nPositions);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nPositions);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector3), nullptr,
       GL_STATIC_DRAW_ARB);
   DebugAssertNoGLError();
 
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nTextureCoords);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nTextureCoords);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector2), nullptr,
       GL_STATIC_DRAW_ARB);
   DebugAssertNoGLError();
 
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nNormals);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nNormals);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector3), nullptr,
       GL_STATIC_DRAW_ARB);
   DebugAssertNoGLError();
 
-  glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB, m_nTriangles);
+  GetOpenGLStateCache().BindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, m_nTriangles);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ELEMENT_ARRAY_BUFFER_ARB, GetTotalTriangles() * sizeof(msTriangle),
       nullptr, GL_STATIC_DRAW_ARB);
   DebugAssertNoGLError();
 
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nTextureMatrixScale);
+  GetOpenGLStateCache().BindBuffer(
+      GL_ARRAY_BUFFER_ARB, m_nTextureMatrixScale);
   DebugAssertNoGLError();
   glBufferDataARB(
       GL_ARRAY_BUFFER_ARB, GetTotalVertices() * sizeof(RageVector2), nullptr,
@@ -1521,42 +1488,37 @@ void RageCompiledGeometryHWOGL::Draw(int iMeshIndex) const {
     return;
   }
 
-  glEnableClientState(GL_VERTEX_ARRAY);
+  GetOpenGLStateCache().SetClientState(GL_VERTEX_ARRAY, true);
   DebugAssertNoGLError();
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nPositions);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nPositions);
   DebugAssertNoGLError();
   glVertexPointer(3, GL_FLOAT, 0, nullptr);
   DebugAssertNoGLError();
 
-  glDisableClientState(GL_COLOR_ARRAY);
+  GetOpenGLStateCache().SetClientState(GL_COLOR_ARRAY, false);
   DebugAssertNoGLError();
 
-  glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+  GetOpenGLStateCache().SetClientState(GL_TEXTURE_COORD_ARRAY, true);
   DebugAssertNoGLError();
-  glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nTextureCoords);
+  GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nTextureCoords);
   DebugAssertNoGLError();
   glTexCoordPointer(2, GL_FLOAT, 0, nullptr);
   DebugAssertNoGLError();
 
-  // TRICKY:  Don't bind and send normals if lighting is disabled.  This
-  // will save some effort transforming these values.
-  // XXX: We should keep track of these ourself and avoid glGet*()
-  GLboolean bLighting;
-  glGetBooleanv(GL_LIGHTING, &bLighting);
-  GLboolean bTextureGenS;
-  glGetBooleanv(GL_TEXTURE_GEN_S, &bTextureGenS);
-  GLboolean bTextureGenT;
-  glGetBooleanv(GL_TEXTURE_GEN_T, &bTextureGenT);
+  // TRICKY:  Don't bind and send normals if lighting and texture coordinate
+  // generation are disabled.  This saves work transforming unused normals.
+  const bool needsNormals =
+      GetOpenGLStateCache().IsLightingEnabled() || IsTextureGenEnabledForDraw();
 
-  if (bLighting || bTextureGenS || bTextureGenT) {
-    glEnableClientState(GL_NORMAL_ARRAY);
+  if (needsNormals) {
+    GetOpenGLStateCache().SetClientState(GL_NORMAL_ARRAY, true);
     DebugAssertNoGLError();
-    glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nNormals);
+    GetOpenGLStateCache().BindBuffer(GL_ARRAY_BUFFER_ARB, m_nNormals);
     DebugAssertNoGLError();
     glNormalPointer(GL_FLOAT, 0, nullptr);
     DebugAssertNoGLError();
   } else {
-    glDisableClientState(GL_NORMAL_ARRAY);
+    GetOpenGLStateCache().SetClientState(GL_NORMAL_ARRAY, false);
     DebugAssertNoGLError();
   }
 
@@ -1567,20 +1529,20 @@ void RageCompiledGeometryHWOGL::Draw(int iMeshIndex) const {
        * state, so only enable it if we're using it. */
       glEnableVertexAttribArrayARB(g_iAttribTextureMatrixScale);
       DebugAssertNoGLError();
-      glBindBufferARB(GL_ARRAY_BUFFER_ARB, m_nTextureMatrixScale);
+      GetOpenGLStateCache().BindBuffer(
+          GL_ARRAY_BUFFER_ARB, m_nTextureMatrixScale);
       DebugAssertNoGLError();
       glVertexAttribPointerARB(
           g_iAttribTextureMatrixScale, 2, GL_FLOAT, false, 0, nullptr);
       DebugAssertNoGLError();
 
-      glUseProgramObjectARB(g_bTextureMatrixShader);
+      GetOpenGLStateCache().SetProgram(g_bTextureMatrixShader);
       DebugAssertNoGLError();
     } else {
       // Kill the texture translation.
       // XXX: Change me to scale the translation by the TextureTranslationScale
       // of the first vertex.
-      RageMatrix mat;
-      glGetFloatv(GL_TEXTURE_MATRIX, (float*)mat);
+      RageMatrix mat = GetTextureMatrixForDraw();
 
       /*
       for( int i=0; i<4; i++ )
@@ -1596,13 +1558,13 @@ void RageCompiledGeometryHWOGL::Draw(int iMeshIndex) const {
       mat.m[3][1] = 0;
       mat.m[3][2] = 0;
 
-      glMatrixMode(GL_TEXTURE);
+      GetOpenGLStateCache().SetMatrixMode(GL_TEXTURE);
       glLoadMatrixf((const float*)mat);
       DebugAssertNoGLError();
     }
   }
 
-  glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB, m_nTriangles);
+  GetOpenGLStateCache().BindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, m_nTriangles);
   DebugAssertNoGLError();
 
 #define BUFFER_OFFSET(o) ((char*)(o))
@@ -1620,7 +1582,7 @@ void RageCompiledGeometryHWOGL::Draw(int iMeshIndex) const {
 
   if (meshInfo.m_bNeedsTextureMatrixScale && g_bTextureMatrixShader != 0) {
     glDisableVertexAttribArrayARB(g_iAttribTextureMatrixScale);
-    glUseProgramObjectARB(0);
+    GetOpenGLStateCache().SetProgram(0);
   }
 }
 
@@ -1783,8 +1745,7 @@ void RageDisplay_Legacy::DrawLineStripInternal(
    * use this for anything 3d at the moment anyway ...)  This is needed
    * because points aren't scaled like regular polys--a zero-size point
    * will still be drawn. */
-  RageMatrix mat;
-  glGetFloatv(GL_MODELVIEW_MATRIX, (float*)mat);
+  RageMatrix mat = GetModelViewMatrixForDraw();
 
   if (mat.m[0][0] < 1e-5 && mat.m[1][1] < 1e-5) {
     return;
@@ -1836,7 +1797,7 @@ void RageDisplay_Legacy::SetTexture(TextureUnit tu, uintptr_t iTexture) {
     return;
   }
 
-  g_BoundTextures[static_cast<size_t>(tu)] = iTexture;
+  GetOpenGLTextureStateCache().BindTexture(tu, iTexture);
 
   if (iTexture) {
     glEnable(GL_TEXTURE_2D);
@@ -1858,68 +1819,8 @@ void RageDisplay_Legacy::SetTextureFiltering(TextureUnit tu, bool b) {
     return;
   }
 
-  const uintptr_t texture = g_BoundTextures[static_cast<size_t>(tu)];
-  if (texture == 0) {
-    /* SetTexture disables GL_TEXTURE_2D for this unit.  Texture parameters on
-     * the default texture object cannot affect rendering, so do not query or
-     * mutate them. */
-    return;
-  }
-
-  const GLint magFilter = b ? GL_LINEAR : GL_NEAREST;
-  GLint minFilter = GL_NEAREST;
-  bool setMagFilter = true;
-  bool setMinFilter = true;
-  bool knownTexture = false;
-
-  {
-    std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
-    const auto it = g_TextureStates.find(texture);
-    if (it != g_TextureStates.end()) {
-      knownTexture = true;
-      if (b) {
-        if (it->second.hasMipmaps) {
-          minFilter = g_pWind->GetActualVideoModeParams().bTrilinearFiltering
-                          ? GL_LINEAR_MIPMAP_LINEAR
-                          : GL_LINEAR_MIPMAP_NEAREST;
-        } else {
-          minFilter = GL_LINEAR;
-        }
-      }
-
-      setMagFilter = it->second.magFilter != magFilter;
-      setMinFilter = it->second.minFilter != minFilter;
-      it->second.magFilter = magFilter;
-      it->second.minFilter = minFilter;
-    }
-  }
-
-  /* Preserve the old behavior for texture handles created outside this
-   * renderer.  Textures created by CreateTexture and CreateRenderTarget never
-   * take this path. */
-  if (!knownTexture && b) {
-    GLint iWidth1 = -1;
-    GLint iWidth2 = -1;
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &iWidth1);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 1, GL_TEXTURE_WIDTH, &iWidth2);
-    if (iWidth1 > 1 && iWidth2 != 0) {
-      /* Mipmaps are enabled. */
-      if (g_pWind->GetActualVideoModeParams().bTrilinearFiltering) {
-        minFilter = GL_LINEAR_MIPMAP_LINEAR;
-      } else {
-        minFilter = GL_LINEAR_MIPMAP_NEAREST;
-      }
-    } else {
-      minFilter = GL_LINEAR;
-    }
-  }
-
-  if (setMagFilter) {
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
-  }
-  if (setMinFilter) {
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
-  }
+  GetOpenGLTextureStateCache().SetFiltering(
+      tu, b, g_pWind->GetActualVideoModeParams().bTrilinearFiltering);
 }
 
 void RageDisplay_Legacy::SetEffectMode(EffectMode effect) {
@@ -1964,18 +1865,20 @@ void RageDisplay_Legacy::SetEffectMode(EffectMode effect) {
   }
 
   DebugFlushGLErrors();
-  glUseProgramObjectARB(hShader);
+  GetOpenGLStateCache().SetProgram(hShader);
   if (hShader == 0) {
     return;
   }
-  GLint iTexture1 = glGetUniformLocationARB(hShader, "Texture1");
-  GLint iTexture2 = glGetUniformLocationARB(hShader, "Texture2");
+  GLint iTexture1 =
+      GetOpenGLStateCache().GetUniformLocation(hShader, "Texture1");
+  GLint iTexture2 =
+      GetOpenGLStateCache().GetUniformLocation(hShader, "Texture2");
   glUniform1iARB(iTexture1, 0);
   glUniform1iARB(iTexture2, 1);
 
   if (effect == EffectMode_YUYV422) {
     GLint iTextureWidthUniform =
-        glGetUniformLocationARB(hShader, "TextureWidth");
+        GetOpenGLStateCache().GetUniformLocation(hShader, "TextureWidth");
     GLint iWidth;
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &iWidth);
     glUniform1iARB(iTextureWidthUniform, iWidth);
@@ -2050,24 +1953,7 @@ void RageDisplay_Legacy::SetTextureWrapping(TextureUnit tu, bool b) {
     return;
   }
 
-  const GLint mode = b ? GL_REPEAT : GL_CLAMP_TO_EDGE;
-  const uintptr_t texture = g_BoundTextures[static_cast<size_t>(tu)];
-  bool setWrapping = true;
-  {
-    std::lock_guard<std::mutex> lock(g_TextureStatesMutex);
-    const auto it = g_TextureStates.find(texture);
-    if (it != g_TextureStates.end()) {
-      setWrapping = it->second.wrapMode != mode;
-      it->second.wrapMode = mode;
-    }
-  }
-
-  if (!setWrapping) {
-    return;
-  }
-
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, mode);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, mode);
+  GetOpenGLTextureStateCache().SetWrapping(tu, b);
 }
 
 void RageDisplay_Legacy::SetMaterial(
@@ -2137,24 +2023,24 @@ bool RageDisplay_Legacy::SupportsThreadedRendering() {
 
 void RageDisplay_Legacy::BeginConcurrentRenderingMainThread() {
   g_pWind->BeginConcurrentRenderingMainThread();
-  InvalidateRenderStateCache();
+  GetOpenGLStateCache().InvalidateAll();
 }
 
 void RageDisplay_Legacy::EndConcurrentRenderingMainThread() {
   g_pWind->EndConcurrentRenderingMainThread();
-  InvalidateRenderStateCache();
+  GetOpenGLStateCache().InvalidateAll();
 }
 
 void RageDisplay_Legacy::BeginConcurrentRendering() {
-  g_BoundTextures.fill(0);
+  GetOpenGLTextureStateCache().ForgetAllTextures();
   g_pWind->BeginConcurrentRendering();
-  InvalidateRenderStateCache();
+  GetOpenGLStateCache().InvalidateAll();
   RageDisplay::BeginConcurrentRendering();
 }
 
 void RageDisplay_Legacy::EndConcurrentRendering() {
   g_pWind->EndConcurrentRendering();
-  InvalidateRenderStateCache();
+  GetOpenGLStateCache().InvalidateAll();
 }
 
 void RageDisplay_Legacy::DeleteTexture(uintptr_t iTexture) {
@@ -2165,11 +2051,11 @@ void RageDisplay_Legacy::DeleteTexture(uintptr_t iTexture) {
   if (g_mapRenderTargets.find(iTexture) != g_mapRenderTargets.end()) {
     delete g_mapRenderTargets[iTexture];
     g_mapRenderTargets.erase(iTexture);
-    ForgetTexture(iTexture);
+    GetOpenGLTextureStateCache().ForgetTexture(iTexture);
     return;
   }
 
-  ForgetTexture(iTexture);
+  GetOpenGLTextureStateCache().ForgetTexture(iTexture);
   DebugFlushGLErrors();
   glDeleteTextures(1, reinterpret_cast<GLuint*>(&iTexture));
   DebugAssertNoGLError();
@@ -2352,8 +2238,9 @@ uintptr_t RageDisplay_Legacy::CreateTexture(
     glGenerateMipmap(GL_TEXTURE_2D);
   }
 
-  RegisterTexture(iTexHandle, bGenerateMipMaps);
-  g_BoundTextures[static_cast<size_t>(TextureUnit_1)] = iTexHandle;
+  GetOpenGLTextureStateCache().RegisterTexture(
+      iTexHandle, bGenerateMipMaps);
+  GetOpenGLTextureStateCache().BindTexture(TextureUnit_1, iTexHandle);
   SetTextureFiltering(TextureUnit_1, true);
   SetTextureWrapping(TextureUnit_1, false);
 
@@ -2402,7 +2289,7 @@ struct RageTextureLock_OGL : public RageTextureLock, public InvalidateObject {
     CreateObject();
 
     m_iTexHandle = iTexHandle;
-    glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, m_iBuffer);
+    GetOpenGLStateCache().BindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, m_iBuffer);
 
     int iSize = pSurface->h * pSurface->pitch;
     glBufferDataARB(GL_PIXEL_UNPACK_BUFFER_ARB, iSize, nullptr, GL_STREAM_DRAW);
@@ -2426,7 +2313,7 @@ struct RageTextureLock_OGL : public RageTextureLock, public InvalidateObject {
     pSurface->pixels = nullptr;
 
     m_iTexHandle = 0;
-    glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+    GetOpenGLStateCache().BindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
   }
 
  private:
@@ -2671,7 +2558,7 @@ uintptr_t RageDisplay_Legacy::CreateRenderTarget(
 
   ASSERT(g_mapRenderTargets.find(iTexture) == g_mapRenderTargets.end());
   g_mapRenderTargets[iTexture] = pTarget;
-  RegisterTexture(iTexture, false);
+  GetOpenGLTextureStateCache().RegisterTexture(iTexture, false);
   return iTexture;
 }
 
@@ -2690,7 +2577,7 @@ void RageDisplay_Legacy::SetRenderTarget(
     uintptr_t iTexture, bool bPreserveTexture) {
   if (iTexture == 0) {
     g_bInvertY = false;
-    glFrontFace(GL_CCW);
+    GetOpenGLStateCache().SetFrontFace(GL_CCW);
 
     /* Pop matrixes affected by SetDefaultRenderStates. */
     DISPLAY->CameraPopMatrix();
@@ -2698,11 +2585,11 @@ void RageDisplay_Legacy::SetRenderTarget(
     /* Reset the viewport. */
     int fWidth = g_pWind->GetActualVideoModeParams().windowWidth;
     int fHeight = g_pWind->GetActualVideoModeParams().windowHeight;
-    glViewport(0, 0, fWidth, fHeight);
+    GetOpenGLStateCache().SetViewport(0, 0, fWidth, fHeight);
 
     if (g_pCurrentRenderTarget) {
       g_pCurrentRenderTarget->FinishRenderingTo();
-      InvalidateRenderStateCache();
+      GetOpenGLStateCache().InvalidateAll();
     }
     g_pCurrentRenderTarget = nullptr;
     return;
@@ -2717,17 +2604,18 @@ void RageDisplay_Legacy::SetRenderTarget(
   ASSERT(g_mapRenderTargets.find(iTexture) != g_mapRenderTargets.end());
   RenderTarget* pTarget = g_mapRenderTargets[iTexture];
   pTarget->StartRenderingTo();
-  InvalidateRenderStateCache();
+  GetOpenGLStateCache().InvalidateAll();
   g_pCurrentRenderTarget = pTarget;
 
   /* Set the viewport to the size of the render target. */
-  glViewport(0, 0, pTarget->GetParam().iWidth, pTarget->GetParam().iHeight);
+  GetOpenGLStateCache().SetViewport(
+      0, 0, pTarget->GetParam().iWidth, pTarget->GetParam().iHeight);
 
   /* If this render target implementation flips Y, compensate.   Inverting will
    * switch the winding order. */
   g_bInvertY = pTarget->InvertY();
   if (g_bInvertY) {
-    glFrontFace(GL_CW);
+    GetOpenGLStateCache().SetFrontFace(GL_CW);
   }
 
   /* The render target may be in a different OpenGL context, so re-send
@@ -2737,7 +2625,7 @@ void RageDisplay_Legacy::SetRenderTarget(
 
   /* Clear the texture, if requested.  Always set the associated state, for
    * consistency. */
-  glClearColor(0, 0, 0, 0);
+  GetOpenGLStateCache().SetClearColor(0, 0, 0, 0);
   SetZWrite(true);
 
   /* If bPreserveTexture is false, clear the render target.  Only clear the
@@ -2864,15 +2752,7 @@ void RageDisplay_Legacy::SetSphereEnvironmentMapping(TextureUnit tu, bool b) {
     return;
   }
 
-  if (b) {
-    glTexGeni(GL_S, GL_TEXTURE_GEN_MODE, GL_SPHERE_MAP);
-    glTexGeni(GL_T, GL_TEXTURE_GEN_MODE, GL_SPHERE_MAP);
-    glEnable(GL_TEXTURE_GEN_S);
-    glEnable(GL_TEXTURE_GEN_T);
-  } else {
-    glDisable(GL_TEXTURE_GEN_S);
-    glDisable(GL_TEXTURE_GEN_T);
-  }
+  GetOpenGLStateCache().SetTextureGen(tu, b);
 }
 
 GLint iCelTexture1, iCelTexture2 = 0;
@@ -2884,13 +2764,13 @@ void RageDisplay_Legacy::SetCelShaded(int stage) {
 
   switch (stage) {
     case 1:
-      glUseProgramObjectARB(g_gShellShader);
+      GetOpenGLStateCache().SetProgram(g_gShellShader);
       break;
     case 2:
-      glUseProgramObjectARB(g_gCelShader);
+      GetOpenGLStateCache().SetProgram(g_gCelShader);
       break;
     default:
-      glUseProgramObjectARB(0);
+      GetOpenGLStateCache().SetProgram(0);
       break;
   }
 }

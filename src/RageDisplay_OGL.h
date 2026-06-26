@@ -106,6 +106,9 @@ class RageDisplay_Legacy : public RageDisplay {
   void SetSphereEnvironmentMapping(TextureUnit tu, bool b);
   void SetCelShaded(int stage);
 
+  RageMatrix GetTextureMatrixForDraw() const;
+  RageMatrix GetModelViewMatrixForDraw() const;
+
   RageCompiledGeometry* CreateCompiledGeometry();
   void DeleteCompiledGeometry(RageCompiledGeometry* p);
 
