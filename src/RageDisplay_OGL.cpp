@@ -713,6 +713,75 @@ static void CheckReversePackedPixels() {
   }
 }
 
+/* OpenGL keeps most render state until it is changed, but the actors set all of
+ * theirs on every draw, so the great majority of these calls hand the driver a
+ * value it already holds. Caching what was last set and dropping the repeats
+ * takes roughly ten calls per draw out of the frame.
+ *
+ * Only state OpenGL keeps globally or per texture unit belongs here. Filtering
+ * and wrapping are deliberately absent: those are properties of the texture
+ * object, so a cache of them would skip a call that a newly bound texture
+ * still needs. */
+namespace {
+
+struct RenderStateCache {
+  BlendMode blend_mode;
+  uintptr_t texture[NUM_TextureUnit];
+  TextureMode texture_mode[NUM_TextureUnit];
+  bool z_write;
+  ZTestMode z_test_mode;
+  float z_bias;
+  CullMode cull_mode;
+  EffectMode effect_mode;
+  bool alpha_test;
+  bool lighting;
+};
+
+RenderStateCache g_StateCache;
+
+/* Off restores the old behaviour, where every setter reached the driver even
+ * when it was handing over a value the driver already had. Kept so the two can
+ * be compared on the same build. */
+Preference<bool> g_bCacheRenderStates("CacheRenderStates", true);
+
+// Set to values no caller can pass, so the first set of each is a miss.
+void InvalidateStateCache() {
+  g_StateCache.blend_mode = BlendMode_Invalid;
+  for (int i = 0; i < NUM_TextureUnit; ++i) {
+    g_StateCache.texture[i] = uintptr_t(-1);
+    g_StateCache.texture_mode[i] = TextureMode_Invalid;
+  }
+  g_StateCache.z_write = false;
+  g_StateCache.z_test_mode = ZTestMode_Invalid;
+  g_StateCache.z_bias = -1.f;
+  g_StateCache.cull_mode = CullMode_Invalid;
+  g_StateCache.effect_mode = EffectMode_Invalid;
+  g_StateCache.alpha_test = false;
+  g_StateCache.lighting = false;
+}
+
+// Anything that binds a texture outside SetTexture leaves the cache stale.
+void InvalidateTextureBindings() {
+  for (int i = 0; i < NUM_TextureUnit; ++i) {
+    g_StateCache.texture[i] = uintptr_t(-1);
+  }
+}
+
+void InvalidateBlendMode() { g_StateCache.blend_mode = BlendMode_Invalid; }
+
+// Returns true when the driver already holds this value and the call can be
+// dropped.
+template <typename T>
+bool StateUnchanged(T& cached, const T& value) {
+  if (cached == value) {
+    return g_bCacheRenderStates.Get();
+  }
+  cached = value;
+  return false;
+}
+
+}  // namespace
+
 /* How the frame waits for the GPU.
  *   0 (finish): block right after the present until the GPU has drained. The
  *     engine state behind the next frame stays closest to what is on screen,
@@ -785,6 +854,7 @@ void SetupExtensions() {
   }
 
   DropFrameFence();
+  InvalidateStateCache();
 
   CheckPalettedTextures();
   CheckReversePackedPixels();
@@ -1039,6 +1109,7 @@ RageSurface* RageDisplay_Legacy::GetTexture(uintptr_t iTexture) {
 
   FlushGLErrors();
 
+  InvalidateTextureBindings();
   glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(iTexture));
   GLint iHeight, iWidth, iAlphaBits;
   glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &iHeight);
@@ -1770,6 +1841,9 @@ void RageDisplay_Legacy::SetTexture(TextureUnit tu, uintptr_t iTexture) {
   if (!SetTextureUnit(tu)) {
     return;
   }
+  if (StateUnchanged(g_StateCache.texture[tu], iTexture)) {
+    return;
+  }
 
   if (iTexture) {
     glEnable(GL_TEXTURE_2D);
@@ -1781,6 +1855,9 @@ void RageDisplay_Legacy::SetTexture(TextureUnit tu, uintptr_t iTexture) {
 
 void RageDisplay_Legacy::SetTextureMode(TextureUnit tu, TextureMode tm) {
   if (!SetTextureUnit(tu)) {
+    return;
+  }
+  if (StateUnchanged(g_StateCache.texture_mode[tu], tm)) {
     return;
   }
 
@@ -1797,6 +1874,7 @@ void RageDisplay_Legacy::SetTextureMode(TextureUnit tu, TextureMode tm) {
         /* This is changing blend state, instead of texture state, which
          * isn't great, but it's better than doing nothing. */
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        InvalidateBlendMode();
         return;
       }
 
@@ -1848,6 +1926,9 @@ void RageDisplay_Legacy::SetTextureFiltering(TextureUnit tu, bool b) {
 }
 
 void RageDisplay_Legacy::SetEffectMode(EffectMode effect) {
+  if (StateUnchanged(g_StateCache.effect_mode, effect)) {
+    return;
+  }
   if (!GLEW_ARB_fragment_program || !GLEW_ARB_shading_language_100 ||
       !GLEW_ARB_shader_objects) {
     return;
@@ -1937,6 +2018,9 @@ bool RageDisplay_Legacy::IsEffectModeSupported(EffectMode effect) {
 }
 
 void RageDisplay_Legacy::SetBlendMode(BlendMode mode) {
+  if (StateUnchanged(g_StateCache.blend_mode, mode)) {
+    return;
+  }
   glEnable(GL_BLEND);
 
   if (glBlendEquation != nullptr) {
@@ -2037,9 +2121,17 @@ void RageDisplay_Legacy::ClearZBuffer() {
   SetZWrite(write);
 }
 
-void RageDisplay_Legacy::SetZWrite(bool b) { glDepthMask(b); }
+void RageDisplay_Legacy::SetZWrite(bool b) {
+  if (StateUnchanged(g_StateCache.z_write, b)) {
+    return;
+  }
+  glDepthMask(b);
+}
 
 void RageDisplay_Legacy::SetZBias(float f) {
+  if (StateUnchanged(g_StateCache.z_bias, f)) {
+    return;
+  }
   float fNear = SCALE(f, 0.0f, 1.0f, 0.05f, 0.0f);
   float fFar = SCALE(f, 0.0f, 1.0f, 1.0f, 0.95f);
 
@@ -2047,6 +2139,9 @@ void RageDisplay_Legacy::SetZBias(float f) {
 }
 
 void RageDisplay_Legacy::SetZTestMode(ZTestMode mode) {
+  if (StateUnchanged(g_StateCache.z_test_mode, mode)) {
+    return;
+  }
   glEnable(GL_DEPTH_TEST);
   switch (mode) {
     case ZTEST_OFF:
@@ -2101,6 +2196,9 @@ void RageDisplay_Legacy::SetMaterial(
 }
 
 void RageDisplay_Legacy::SetLighting(bool b) {
+  if (StateUnchanged(g_StateCache.lighting, b)) {
+    return;
+  }
   if (b) {
     glEnable(GL_LIGHTING);
   } else {
@@ -2131,6 +2229,9 @@ void RageDisplay_Legacy::SetLightDirectional(
 }
 
 void RageDisplay_Legacy::SetCullMode(CullMode mode) {
+  if (StateUnchanged(g_StateCache.cull_mode, mode)) {
+    return;
+  }
   if (mode != CULL_NONE) {
     glEnable(GL_CULL_FACE);
   }
@@ -2168,11 +2269,15 @@ void RageDisplay_Legacy::EndConcurrentRenderingMainThread() {
 }
 
 void RageDisplay_Legacy::BeginConcurrentRendering() {
+  // A second GL context holds state of its own.
+  InvalidateStateCache();
   g_pWind->BeginConcurrentRendering();
   RageDisplay::BeginConcurrentRendering();
 }
 
 void RageDisplay_Legacy::EndConcurrentRendering() {
+  // A second GL context holds state of its own.
+  InvalidateStateCache();
   g_pWind->EndConcurrentRendering();
 }
 
@@ -2188,6 +2293,7 @@ void RageDisplay_Legacy::DeleteTexture(uintptr_t iTexture) {
   }
 
   DebugFlushGLErrors();
+  InvalidateTextureBindings();
   glDeleteTextures(1, reinterpret_cast<GLuint*>(&iTexture));
   DebugAssertNoGLError();
 }
@@ -2307,6 +2413,7 @@ uintptr_t RageDisplay_Legacy::CreateTexture(
 
   // allocate OpenGL texture resource
   uintptr_t iTexHandle;
+  InvalidateTextureBindings();
   glGenTextures(1, reinterpret_cast<GLuint*>(&iTexHandle));
   ASSERT(iTexHandle != 0);
 
@@ -2471,6 +2578,7 @@ RageTextureLock* RageDisplay_Legacy::CreateTextureLock() {
 void RageDisplay_Legacy::UpdateTexture(
     uintptr_t iTexHandle, RageSurface* pImg, int iXOffset, int iYOffset,
     int iWidth, int iHeight) {
+  InvalidateTextureBindings();
   glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(iTexHandle));
 
   bool bFreeImg;
@@ -2554,6 +2662,7 @@ void RenderTarget_FramebufferObject::Create(
   DebugFlushGLErrors();
 
   // Allocate OpenGL texture resource
+  InvalidateTextureBindings();
   glGenTextures(1, reinterpret_cast<GLuint*>(&m_iTexHandle));
   ASSERT(m_iTexHandle != 0);
 
@@ -2819,6 +2928,9 @@ std::string RageDisplay_Legacy::GetTextureDiagnostics(
  * SetDefault call These kinds of functions is wasteful. -Colby
  */
 void RageDisplay_Legacy::SetAlphaTest(bool b) {
+  if (StateUnchanged(g_StateCache.alpha_test, b)) {
+    return;
+  }
   // Previously this was 0.01, rather than 0x01.
   glAlphaFunc(GL_GREATER, 0.00390625 /* 1/256 */);
   if (b) {
