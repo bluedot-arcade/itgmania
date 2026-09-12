@@ -16,6 +16,7 @@
 #include "EnumHelper.h"
 #include "LocalizedString.h"
 #include "ModelTypes.h"
+#include "Preference.h"
 #include "RageDisplay.h"
 #include "RageDisplay_OGL_Helpers.h"
 #include "RageException.h"
@@ -712,6 +713,62 @@ static void CheckReversePackedPixels() {
   }
 }
 
+/* How the frame waits for the GPU.
+ *   0 (finish): block right after the present until the GPU has drained. The
+ *     engine state behind the next frame stays closest to what is on screen,
+ *     at the cost of never overlapping CPU and GPU work: the frame comes to
+ *     cost the sum of the two rather than the larger of them.
+ *   1 (fence): let the GPU keep working while the next frame is built, and
+ *     block just before that frame's present until the previous one is done.
+ *     Exactly one frame of queueing, and the CPU half of a frame runs against
+ *     the GPU half of the one before it.
+ *   2 (none): never block, and leave the queue depth to the driver. */
+static Preference<int> g_iGpuSyncMode("GpuSyncMode", 1);
+
+static GLsync g_PreviousFrameFence = nullptr;
+
+static bool UsingFences() { return g_iGpuSyncMode.Get() == 1 && GLEW_ARB_sync; }
+
+// A fence from a context that no longer exists must not be waited on.
+static void DropFrameFence() {
+  if (g_PreviousFrameFence != nullptr) {
+    glDeleteSync(g_PreviousFrameFence);
+    g_PreviousFrameFence = nullptr;
+  }
+}
+
+static void WaitForPreviousFrameGpu() {
+  if (g_PreviousFrameFence == nullptr) {
+    return;
+  }
+  // A bounded wait: a lost or never-signalled fence must not hang the game.
+  glClientWaitSync(
+      g_PreviousFrameFence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+  DropFrameFence();
+}
+
+/* The fence goes in before the swap, so that waiting on it costs the frame's
+ * rendering and nothing else. A fence placed after the swap is signalled only
+ * once the present has been consumed, which under vsync means waiting for a
+ * refresh -- the same serialization glFinish imposes, moved one call later. */
+static void FenceFrameBeforeSwap() {
+  if (!UsingFences()) {
+    return;
+  }
+  g_PreviousFrameFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+  glFlush();
+}
+
+static void WaitAfterSwap() {
+  if (UsingFences() || g_iGpuSyncMode.Get() == 2) {
+    glFlush();
+    return;
+  }
+  // Mode 0, and mode 1 on a driver without fences, which has no other way to
+  // bound how far ahead the queue runs.
+  glFinish();
+}
+
 void SetupExtensions() {
   const float fGLVersion = StringToFloat((const char*)glGetString(GL_VERSION));
   g_glVersion = std::lrint(fGLVersion * 10);
@@ -726,6 +783,8 @@ void SetupExtensions() {
   if (GLEW_ARB_multitexture) {
     glGetIntegerv(GL_MAX_TEXTURE_UNITS_ARB, (GLint*)&g_iMaxTextureUnits);
   }
+
+  DropFrameFence();
 
   CheckPalettedTextures();
   CheckReversePackedPixels();
@@ -833,6 +892,12 @@ std::string RageDisplay_Legacy::TryVideoMode(
    * to do this, for other archs?) */
   if (wglewIsSupported("WGL_EXT_swap_control")) {
     wglSwapIntervalEXT(p.vsync);
+    /* Under a compositor the driver is free to ignore the interval, and a
+     * frame rate that is not a divisor of the refresh is the symptom. Read it
+     * back so the log says what was granted, not what was asked for. */
+    LOG->Info(
+        "Swap interval: asked %d, got %d", int(p.vsync),
+        wglGetSwapIntervalEXT());
   } else {
     return std::string(
         "The WGL_EXT_swap_control extension is not supported on your "
@@ -904,6 +969,11 @@ void RageDisplay_Legacy::EndFrame() {
   }
 
   FrameLimitBeforeVsync();
+
+  /* The previous frame's rendering had this whole frame's CPU work to finish
+   * in, which is the overlap a fence buys. */
+  WaitForPreviousFrameGpu();
+  FenceFrameBeforeSwap();
   g_pWind->SwapBuffers();
   FrameLimitAfterVsync();
 
@@ -913,10 +983,11 @@ void RageDisplay_Legacy::EndFrame() {
   // of commands.
   // glFlush() only forces the host to not wait to execute all commands
   // sent so far; it does NOT block on those commands until they finish.
-  // glFinish() blocks. We WANT to block. Why? This puts the engine state
-  // reflected by the next frame as close as possible to the on-screen
-  // appearance of that frame.
-  glFinish();
+  // glFinish() blocks. Blocking puts the engine state reflected by the next
+  // frame as close as possible to the on-screen appearance of that frame, but
+  // it also stops the CPU and the GPU from ever running at the same time.
+  // GpuSyncMode picks which of the two matters more.
+  WaitAfterSwap();
 
   g_pWind->Update();
 
