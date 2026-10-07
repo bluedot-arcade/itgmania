@@ -36,6 +36,8 @@ class RageFileManager {
   bool Copy(const std::string& fromPath, const std::string& toPath);
   bool Remove(const std::string& sPath);
   bool DeleteRecursive(const std::string& sPath);
+  // True if any read-only mount (e.g. the install dir) also provides sPath.
+  bool IsPathReadOnly(const std::string& sPath);
   void CreateDir(const std::string& sDir);
 
   enum FileType { TYPE_FILE, TYPE_DIR, TYPE_NONE };

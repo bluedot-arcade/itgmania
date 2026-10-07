@@ -219,9 +219,10 @@ bool RageFileManager::Unzip(
       continue;
     }
 
-    if (info.m_is_directory) {
-      CreateDir(filepath);
-    } else {
+    // Opening a file for writing creates its parent directories. CreateDir
+    // would leave a "newdir.temp.newdir" file behind here, since the dir cache
+    // doesn't know about the temp file and Remove() can't find it.
+    if (!info.m_is_directory) {
       RageFile f;
       if (!f.Open(filepath, RageFile::WRITE | RageFile::STREAMED)) {
         std::string error = zipFile.GetError();
@@ -242,6 +243,7 @@ bool RageFileManager::Unzip(
   }
 
   mz_zip_reader_end(&zip);
+  FlushDirCache(targetPath);
   return success;
 }
 
@@ -668,6 +670,37 @@ bool RageFileManager::DeleteRecursive(const std::string& sPath) {
   // On some OS's, non-empty directories cannot be deleted.
   // This is a work-around that can delete both files and non-empty directories
   return ::DeleteRecursive(sPath);
+}
+
+bool RageFileManager::IsPathReadOnly(const std::string& sPath_) {
+  std::string sPath = sPath_;
+  NormalizePath(sPath);
+
+  std::vector<LoadedDriver*> apDriverList;
+  ReferenceAllDrivers(apDriverList);
+
+  // Portable installs mount the same folder both read-only at "/" and writable
+  // at "/Songs", so compare the backing paths instead of trusting driver types.
+  std::vector<std::string> writable, readOnly;
+  for (const LoadedDriver* pDriver : apDriverList) {
+    const std::string p = pDriver->GetPath(sPath);
+    if (p.empty() || pDriver->m_pDriver->GetFileType(p) == TYPE_NONE) {
+      continue;
+    }
+    std::string backing = pDriver->m_sRoot + p;
+    NormalizePath(backing);
+    MakeLower(backing);
+    (pDriver->m_sType == "dir" ? writable : readOnly).push_back(backing);
+  }
+
+  UnreferenceAllDrivers(apDriverList);
+
+  for (const std::string& backing : readOnly) {
+    if (std::find(writable.begin(), writable.end(), backing) == writable.end()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void RageFileManager::CreateDir(const std::string& sDir) {
@@ -1348,6 +1381,34 @@ class LunaRageFileManager : public Luna<RageFileManager> {
     LuaHelpers::CreateTableFromArray(vDirs, L);
     return 1;
   }
+  static int Mount(T* p, lua_State* L) {
+    lua_pushboolean(L, p->Mount(SArg(1), SArg(2), SArg(3)));
+    return 1;
+  }
+  static int Unmount(T* p, lua_State* L) {
+    p->Unmount(SArg(1), SArg(2), SArg(3));
+    COMMON_RETURN_SELF;
+  }
+  static int Remove(T* p, lua_State* L) {
+    lua_pushboolean(L, p->Remove(SArg(1)));
+    return 1;
+  }
+  static int IsPathReadOnly(T* p, lua_State* L) {
+    lua_pushboolean(L, p->IsPathReadOnly(SArg(1)));
+    return 1;
+  }
+  static int DeleteRecursive(T* p, lua_State* L) {
+    lua_pushboolean(L, p->DeleteRecursive(SArg(1)));
+    return 1;
+  }
+  static int CreateDir(T* p, lua_State* L) {
+    p->CreateDir(SArg(1));
+    COMMON_RETURN_SELF;
+  }
+  static int ResolvePath(T* p, lua_State* L) {
+    lua_pushstring(L, p->ResolvePath(SArg(1)).c_str());
+    return 1;
+  }
   static int Unzip(T* p, lua_State* L) {
     std::string zipPath = SArg(1);
     std::string targetPath = SArg(2);
@@ -1365,10 +1426,17 @@ class LunaRageFileManager : public Luna<RageFileManager> {
 
   LunaRageFileManager() {
     ADD_METHOD(Copy);
+    ADD_METHOD(CreateDir);
+    ADD_METHOD(DeleteRecursive);
     ADD_METHOD(DoesFileExist);
     ADD_METHOD(GetFileSizeBytes);
     ADD_METHOD(GetHashForFile);
     ADD_METHOD(GetDirListing);
+    ADD_METHOD(IsPathReadOnly);
+    ADD_METHOD(Mount);
+    ADD_METHOD(Remove);
+    ADD_METHOD(ResolvePath);
+    ADD_METHOD(Unmount);
     ADD_METHOD(Unzip);
   }
 };
