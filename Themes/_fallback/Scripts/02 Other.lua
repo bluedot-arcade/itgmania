@@ -129,10 +129,6 @@ function TextBannerAfterSet(self,param)
 	end
 end
 
-function Song:GetStageCost()
-	return self:IsMarathon() and 3 or self:IsLong() and 2 or 1
-end
-
 function OptionsNavigationMode()
 	if PREFSMAN:GetPreference("ThreeKeyNavigation") then
 		return "toggle"

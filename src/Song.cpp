@@ -70,10 +70,16 @@ const int FILE_CACHE_VERSION = 234;
 /** @brief How long does a song sample last by default? */
 const float DEFAULT_MUSIC_SAMPLE_LENGTH = 12.f;
 
-static Preference<float> g_fLongVerSongSeconds("LongVerSongSeconds", 60 * 2.5f);
-static Preference<float> g_fMarathonVerSongSeconds(
-    "MarathonVerSongSeconds", 60 * 5.f);
 static Preference<bool> g_BackUpAllSongSaves("BackUpAllSongSaves", false);
+
+// Stock ITGmania themes read these cutoffs to cost songs themselves, so they
+// report where MinutesPerStage puts the second and third stage.
+static ComputedPreference<float> g_fLongVerSongSeconds(
+    "LongVerSongSeconds",
+    [] { return PREFSMAN->minutes_per_stage_.Get() * 60.0f; });
+static ComputedPreference<float> g_fMarathonVerSongSeconds(
+    "MarathonVerSongSeconds",
+    [] { return PREFSMAN->minutes_per_stage_.Get() * 120.0f; });
 
 static std::vector<std::string> GetImageCacheDirs() {
   std::vector<std::string> image_dirs;
@@ -1922,12 +1928,13 @@ float Song::GetStepsSeconds() const {
   return this->GetLastSecondNoOffset() - this->GetFirstSecondNoOffset();
 }
 
-bool Song::IsLong() const {
-  return !IsMarathon() && music_length_seconds_ >= g_fLongVerSongSeconds;
+int Song::GetStageCostForSeconds(float seconds) {
+  const float stage_seconds = PREFSMAN->minutes_per_stage_.Get() * 60.0f;
+  return std::max(1, static_cast<int>(std::ceil(seconds / stage_seconds)));
 }
 
-bool Song::IsMarathon() const {
-  return music_length_seconds_ >= g_fMarathonVerSongSeconds;
+int Song::GetStageCost() const {
+  return GetStageCostForSeconds(music_length_seconds_);
 }
 
 // lua start
@@ -2114,14 +2121,9 @@ class LunaSong : public Luna<Song> {
     lua_pushnumber(L, p->music_sample_length_seconds_);
     return 1;
   }
-  static int IsLong(T* p, lua_State* L) {
-    lua_pushboolean(L, p->IsLong());
-    return 1;
-  }
-  static int IsMarathon(T* p, lua_State* L) {
-    lua_pushboolean(L, p->IsMarathon());
-    return 1;
-  }
+  DEFINE_METHOD(GetStageCost, GetStageCost())
+  DEFINE_METHOD(IsLong, GetStageCost() == 2)
+  DEFINE_METHOD(IsMarathon, GetStageCost() >= 3)
   static int HasStepsType(T* p, lua_State* L) {
     StepsType st = Enum::Check<StepsType>(L, 1);
     lua_pushboolean(L, p->HasStepsType(st));
@@ -2332,6 +2334,7 @@ class LunaSong : public Luna<Song> {
     ADD_METHOD(MusicLengthSeconds);
     ADD_METHOD(GetSampleStart);
     ADD_METHOD(GetSampleLength);
+    ADD_METHOD(GetStageCost);
     ADD_METHOD(IsLong);
     ADD_METHOD(IsMarathon);
     ADD_METHOD(HasStepsType);

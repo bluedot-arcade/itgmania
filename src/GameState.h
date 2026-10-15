@@ -240,7 +240,7 @@ class GameState {
 
   std::string last_open_section_;
 
-  static int GetNumStagesMultiplierForSong(const Song* song);
+  int GetNumStagesForCourse(const Course* course) const;
   int GetNumStagesForCurrentSongAndStepsOrCourse() const;
 
   void BeginStage();

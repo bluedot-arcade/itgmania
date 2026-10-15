@@ -52,11 +52,10 @@ void WheelNotifyIcon::SetFlags(Flags flags) {
     case 2:
       icons_to_show_.push_back(long_ver);
       break;
-    case 3:
+    default:
+      // Songs longer than three stages exist now that cost follows length.
       icons_to_show_.push_back(marathon);
       break;
-    default:
-      FAIL_M(ssprintf("flags.stages_for_song_ = %d", flags.stages_for_song_));
   }
 
   if (flags.has_beginner_or1_meter_ && (bool)SHOW_TRAINING) {

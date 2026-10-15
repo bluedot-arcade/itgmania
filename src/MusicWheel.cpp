@@ -247,7 +247,7 @@ void MusicWheel::BeginScreen() {
   /* Invalidate current Song if it can't be played
    * because there are not enough stages remaining. */
   if (GAMESTATE->cur_song_ != nullptr &&
-      GameState::GetNumStagesMultiplierForSong(GAMESTATE->cur_song_) >
+      GAMESTATE->cur_song_->GetStageCost() >
           GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer()) {
     GAMESTATE->cur_song_.Set(nullptr);
   }
@@ -1247,8 +1247,7 @@ void MusicWheel::BuildWheelItemDatas(
       for (const StepsType& type : steps_type) {
         WID->flags_.edits_ |= WID->song_->HasEdits(type);
       }
-      WID->flags_.stages_for_song_ =
-          GameState::GetNumStagesMultiplierForSong(WID->song_);
+      WID->flags_.stages_for_song_ = WID->song_->GetStageCost();
     } else if (WID->course_ != nullptr) {
       WID->flags_.has_beginner_or1_meter_ = false;
       WID->flags_.edits_ = WID->course_->IsAnEdit();
@@ -1349,8 +1348,7 @@ void MusicWheel::FilterWheelItemDatas(
       }
 
       /* Check that we have enough stages to play this song. */
-      if (GAMESTATE->GetNumStagesMultiplierForSong(wid.song_) >
-          max_stages_for_song) {
+      if (song->GetStageCost() > max_stages_for_song) {
         remove[i] = true;
         continue;
       }
@@ -1405,6 +1403,14 @@ void MusicWheel::FilterWheelItemDatas(
     if (wid.type_ == WheelItemDataType_Course) {
       if (!wid.course_->IsPlayableIn(
               GAMESTATE->GetCurrentStyle(PLAYER_INVALID)->steps_type_)) {
+        remove[i] = true;
+        continue;
+      }
+
+      // Courses must fit the stages left; endless ones are event mode only.
+      if (GAMESTATE->GetNumStagesForCourse(wid.course_) >
+              GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer() ||
+          (wid.course_->IsEndless() && !GAMESTATE->IsEventMode())) {
         remove[i] = true;
       }
     }

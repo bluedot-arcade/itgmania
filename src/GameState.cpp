@@ -704,18 +704,16 @@ void GameState::SaveLocalData() {
   PROFILEMAN->SaveMachineProfile();
 }
 
-int GameState::GetNumStagesMultiplierForSong(const Song* song) {
-  int num_stages = 1;
-
-  ASSERT(song != nullptr);
-  if (song->IsMarathon()) {
-    num_stages *= 3;
-  }
-  if (song->IsLong()) {
-    num_stages *= 2;
-  }
-
-  return num_stages;
+int GameState::GetNumStagesForCourse(const Course* course) const {
+  float seconds;
+  // Random entries only pick one-stage songs, so each costs at most a stage.
+  const int stages =
+      course->GetTotalSeconds(
+          GetCurrentStyle(PLAYER_INVALID)->steps_type_, seconds)
+          ? Song::GetStageCostForSeconds(seconds)
+          : static_cast<int>(course->entries_.size());
+  // A course still ends the set, as it always has.
+  return std::max(stages, PREFSMAN->songs_per_play_.Get());
 }
 
 int GameState::GetNumStagesForCurrentSongAndStepsOrCourse() const {
@@ -726,11 +724,10 @@ int GameState::GetNumStagesForCurrentSongAndStepsOrCourse() const {
     if (IsAnExtraStage()) {
       num_stages_of_this_song = 1;
     } else {
-      num_stages_of_this_song =
-          GameState::GetNumStagesMultiplierForSong(cur_song_);
+      num_stages_of_this_song = cur_song_->GetStageCost();
     }
   } else if (cur_course_) {
-    num_stages_of_this_song = PREFSMAN->songs_per_play_;
+    num_stages_of_this_song = GetNumStagesForCourse(cur_course_);
   } else {
     return -1;
   }
@@ -1333,11 +1330,7 @@ int GameState::GetSmallestNumStagesLeftForAnyHumanPlayer() const {
 bool GameState::IsFinalStageForEveryHumanPlayer() const {
   int song_cost = 1;
   if (cur_song_ != nullptr) {
-    if (cur_song_->IsLong()) {
-      song_cost = 2;
-    } else if (cur_song_->IsMarathon()) {
-      song_cost = 3;
-    }
+    song_cost = cur_song_->GetStageCost();
   }
   // If we're on gameplay or evaluation, they set this to false because those
   // screens have already had the stage tokens subtracted.

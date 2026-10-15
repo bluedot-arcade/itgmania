@@ -130,6 +130,27 @@ class Preference : public IPreference {
   void (*validate_)(T& val);
 };
 
+// Computed on every read and ignoring writes, so themes can still read and set
+// a retired setting while it follows the settings that replaced it.
+template <class T>
+class ComputedPreference : public IPreference {
+ public:
+  ComputedPreference(const std::string& name, T (*get)())
+      : IPreference(name, PreferenceType::Mutable), get_(get) {}
+
+  void LoadDefault() {}
+  void SetDefaultFromString(const std::string& s) {}
+  std::string ToString() const {
+    return StringConversion::ToString<T>(get_());
+  }
+  void FromString(const std::string& s) {}
+  void SetFromStack(lua_State* L) { lua_pop(L, 1); }
+  void PushValue(lua_State* L) const { LuaHelpers::Push<T>(L, get_()); }
+
+ private:
+  T (*get_)();
+};
+
 /** @brief Utilities for working with Lua. */
 namespace LuaHelpers {
 template <typename T>

@@ -148,6 +148,17 @@ void ValidateDisplayAspectRatio(float& val) {
 
 void ValidateSongsPerPlay(int& val) { rage_clamp(val, 0, MAX_SONGS_PER_PLAY); }
 
+// Short enough stages keep marathon sessions off arcade cabinets.
+static void ValidateMinutesPerStage(int& val) {
+  if (val >= 3 && val <= 5) {
+    return;
+  }
+  if (LOG) {
+    LOG->Warn("MinutesPerStage %d is not 3, 4 or 5; using 3.", val);
+  }
+  val = 3;
+}
+
 PrefsManager::PrefsManager()
     : current_game_("CurrentGame", ""),
 
@@ -225,6 +236,7 @@ PrefsManager::PrefsManager()
       coins_per_credit_("CoinsPerCredit", 1),
       max_num_credits_("MaxNumCredits", 20),
       songs_per_play_("SongsPerPlay", 3, ValidateSongsPerPlay),
+      minutes_per_stage_("MinutesPerStage", 3, ValidateMinutesPerStage),
       delayed_credits_reconcile_("DelayedCreditsReconcile", false),
       combo_continues_between_songs_("ComboContinuesBetweenSongs", false),
       allow_multiple_toasties_("AllowMultipleToasties", true),
