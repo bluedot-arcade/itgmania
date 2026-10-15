@@ -1282,8 +1282,7 @@ void SongUtil::GetPlayableStepsTypes(
 
     bool bEnoughStages =
         GAMESTATE->IsAnExtraStage() ||
-        GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer() >=
-            pSong->GetStageCost();
+        GAMESTATE->GetMaxStagesForSelection() >= pSong->GetStageCost();
 
     if (bShowThisStepsType && bEnoughStages) {
       vOut.insert(type);

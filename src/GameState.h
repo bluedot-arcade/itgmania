@@ -250,6 +250,11 @@ class GameState {
   void FinishStage();
   int GetNumStagesLeft(PlayerNumber pn) const;
   int GetSmallestNumStagesLeftForAnyHumanPlayer() const;
+  // Stages left plus the ones every affordable continue would add.
+  int GetMaxStagesForSelection() const;
+  int GetCoinsNeededToContinue() const;
+  bool CanContinue() const;
+  bool UseContinue();
   bool IsFinalStageForEveryHumanPlayer() const;
   bool IsAnExtraStage() const;
   bool IsAnExtraStageAndSelectionLocked() const;

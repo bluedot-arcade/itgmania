@@ -233,6 +233,7 @@ class PrefsManager {
   Preference<int> m_iMaxNumCredits;
   Preference<int> m_iSongsPerPlay;
   Preference<int> m_iMinutesPerStage;
+  Preference<bool> m_bAllowContinue;
   Preference<bool> m_bDelayedCreditsReconcile;  // zuh?
   Preference<bool> m_bComboContinuesBetweenSongs;
   Preference<bool> m_AllowMultipleToasties;
