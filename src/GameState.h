@@ -295,7 +295,6 @@ class GameState {
   bool m_bBackedOutOfFinalStage;
 
   bool m_bPremiumFreeActive;
-  int m_iPremiumFreeMinutes;
   RageTimer m_PremiumFreeStartTime;
 
   // Music statistics:
@@ -475,7 +474,6 @@ class GameState {
   // Keep extra stage logic internal to GameState.
  private:
   float GetPremiumFreeSeconds() const;
-  float GetPremiumFreeSongGraceSeconds() const;
   EarnedExtraStage CalculateEarnedExtraStage() const;
   int m_iAwardedExtraStages[NUM_PLAYERS];
   bool m_bEarnedExtraStage;
