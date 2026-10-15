@@ -2684,8 +2684,12 @@ void ScreenGameplay::StageFinished(bool backed_out) {
     return;
   }
 
-  // If all players failed, kill.
-  if (STATSMAN->cur_stage_stats_.AllFailed()) {
+  StageStats& stats = STATSMAN->cur_stage_stats_;
+  if (stats.gave_up_ || stats.used_autoplay_) {
+    FOREACH_HumanPlayer(p) stats.player_[p].failed_ = true;
+  }
+  const bool keep_set = stats.gave_up_ && PREFSMAN->continue_on_give_up_;
+  if (PREFSMAN->allow_failing_out_of_set_ && stats.AllFailed() && !keep_set) {
     FOREACH_HumanPlayer(p) GAMESTATE->player_stage_tokens_[p] = 0;
   }
 

@@ -238,6 +238,8 @@ PrefsManager::PrefsManager()
       songs_per_play_("SongsPerPlay", 3, ValidateSongsPerPlay),
       minutes_per_stage_("MinutesPerStage", 3, ValidateMinutesPerStage),
       allow_continue_("AllowContinue", false),
+      allow_failing_out_of_set_("AllowFailingOutOfSet", true),
+      continue_on_give_up_("ContinueOnGiveUp", false),
       delayed_credits_reconcile_("DelayedCreditsReconcile", false),
       combo_continues_between_songs_("ComboContinuesBetweenSongs", false),
       allow_multiple_toasties_("AllowMultipleToasties", true),

@@ -234,6 +234,9 @@ class PrefsManager {
   Preference<int> songs_per_play_;
   Preference<int> minutes_per_stage_;
   Preference<bool> allow_continue_;
+  Preference<bool> allow_failing_out_of_set_;
+  // Giving up always fails the song; this only keeps the set going.
+  Preference<bool> continue_on_give_up_;
   Preference<bool> delayed_credits_reconcile_;  // zuh?
   Preference<bool> combo_continues_between_songs_;
   Preference<bool> allow_multiple_toasties_;
