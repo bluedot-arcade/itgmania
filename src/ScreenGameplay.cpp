@@ -2687,8 +2687,12 @@ void ScreenGameplay::StageFinished(bool bBackedOut) {
     return;
   }
 
-  // If all players failed, kill.
-  if (STATSMAN->m_CurStageStats.AllFailed()) {
+  StageStats& stats = STATSMAN->m_CurStageStats;
+  if (stats.m_bGaveUp || stats.m_bUsedAutoplay) {
+    FOREACH_HumanPlayer(p) stats.m_player[p].m_bFailed = true;
+  }
+  const bool keep_set = stats.m_bGaveUp && PREFSMAN->m_bContinueOnGiveUp;
+  if (PREFSMAN->m_bAllowFailingOutOfSet && stats.AllFailed() && !keep_set) {
     FOREACH_HumanPlayer(p) GAMESTATE->m_iPlayerStageTokens[p] = 0;
   }
 

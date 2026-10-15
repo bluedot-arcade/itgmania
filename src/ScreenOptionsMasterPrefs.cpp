@@ -938,6 +938,8 @@ static void InitializeConfOptions() {
   g_ConfOptions.back().m_sPrefName = "SongsPerPlay";
   ADD(ConfOption("MinutesPerStage", MinutesPerStage, "|3", "|4", "|5"));
   ADD(ConfOption("AllowContinue", MovePref<bool>, "Off", "On"));
+  ADD(ConfOption("AllowFailingOutOfSet", MovePref<bool>, "Off", "On"));
+  ADD(ConfOption("ContinueOnGiveUp", MovePref<bool>, "Off", "On"));
 
   ADD(ConfOption("EventMode", MovePref<bool>, "Off", "On (recommended)"));
   ADD(ConfOption(
