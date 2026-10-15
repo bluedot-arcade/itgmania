@@ -219,9 +219,10 @@ bool RageFileManager::Unzip(
       continue;
     }
 
-    if (info.m_is_directory) {
-      CreateDir(filepath);
-    } else {
+    // Opening a file for writing creates its parent directories. CreateDir
+    // would leave a "newdir.temp.newdir" file behind here, since the dir cache
+    // doesn't know about the temp file and Remove() can't find it.
+    if (!info.m_is_directory) {
       RageFile f;
       if (!f.Open(filepath, RageFile::WRITE | RageFile::STREAMED)) {
         std::string error = zipFile.GetError();
@@ -242,6 +243,7 @@ bool RageFileManager::Unzip(
   }
 
   mz_zip_reader_end(&zip);
+  FlushDirCache(targetPath);
   return success;
 }
 
