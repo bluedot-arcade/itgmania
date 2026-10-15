@@ -1235,6 +1235,14 @@ class LunaRageFileManager : public Luna<RageFileManager> {
     LuaHelpers::CreateTableFromArray(vDirs, L);
     return 1;
   }
+  static int Mount(T* p, lua_State* L) {
+    lua_pushboolean(L, p->Mount(SArg(1), SArg(2), SArg(3)));
+    return 1;
+  }
+  static int Unmount(T* p, lua_State* L) {
+    p->Unmount(SArg(1), SArg(2), SArg(3));
+    COMMON_RETURN_SELF;
+  }
   static int Unzip(T* p, lua_State* L) {
     std::string zipPath = SArg(1);
     std::string targetPath = SArg(2);
@@ -1256,6 +1264,8 @@ class LunaRageFileManager : public Luna<RageFileManager> {
     ADD_METHOD(GetFileSizeBytes);
     ADD_METHOD(GetHashForFile);
     ADD_METHOD(GetDirListing);
+    ADD_METHOD(Mount);
+    ADD_METHOD(Unmount);
     ADD_METHOD(Unzip);
   }
 };
