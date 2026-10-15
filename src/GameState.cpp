@@ -148,9 +148,15 @@ static ThemeMetric<bool> ARE_STAGE_SONG_MODS_FORCED(
     "GameState", "AreStageSongModsForced");
 
 static Preference<Premium> g_Premium("Premium", Premium_DoubleFor1Credit);
-static Preference<int> g_iPremiumFreeMinutes("PremiumFreeMinutes", 10);
-static Preference<float> g_fPremiumFreeSongGraceSeconds(
-    "PremiumFreeSongGraceSeconds", 150.0f);
+
+// Premium free buys the time of a regular set, with no grace for a last song.
+static int PremiumFreeMinutes() {
+  return PREFSMAN->songs_per_play_ * PREFSMAN->minutes_per_stage_;
+}
+static ComputedPreference<int> g_iPremiumFreeMinutes(
+    "PremiumFreeMinutes", PremiumFreeMinutes);
+static ComputedPreference<float> g_fPremiumFreeSongGraceSeconds(
+    "PremiumFreeSongGraceSeconds", [] { return 0.0f; });
 Preference<bool> GameState::auto_join_("AutoJoin", false);
 
 GameState::GameState()
@@ -170,7 +176,6 @@ GameState::GameState()
       cur_course_(Message_CurrentCourseChanged),
       cur_trail_(Message_CurrentTrailP1Changed),
       premium_free_active_(false),
-      premium_free_minutes_(0),
       gameplay_lead_in_(Message_GameplayLeadInChanged),
       did_mode_change_note_skin_(false),
       is_using_step_timing_(true),
@@ -350,7 +355,6 @@ void GameState::Reset() {
   cur_course_.Set(nullptr);
   preferred_course_ = nullptr;
   premium_free_active_ = false;
-  premium_free_minutes_ = 0;
   premium_free_start_time_.SetZero();
 
   song_options_.Init();
@@ -1355,7 +1359,8 @@ int GameState::GetCoinsNeededToContinue() const {
 
 bool GameState::CanContinue() const {
   return PREFSMAN->allow_continue_ && GetCoinMode() != CoinMode_Home &&
-         !IsEventMode() && coins_ >= GetCoinsNeededToContinue();
+         !IsEventMode() && !premium_free_active_ &&
+         coins_ >= GetCoinsNeededToContinue();
 }
 
 bool GameState::UseContinue() {
@@ -1484,7 +1489,6 @@ void GameState::ActivatePremiumFree() {
   }
 
   premium_free_active_ = true;
-  premium_free_minutes_ = g_iPremiumFreeMinutes.Get();
   premium_free_start_time_.SetZero();
 }
 
@@ -1510,12 +1514,7 @@ float GameState::GetPremiumFreeSecondsLeft() const {
 }
 
 float GameState::GetPremiumFreeSeconds() const {
-  return std::clamp(
-      static_cast<float>(premium_free_minutes_) * 60.0f, 0.0f, 3600.0f);
-}
-
-float GameState::GetPremiumFreeSongGraceSeconds() const {
-  return std::clamp(g_fPremiumFreeSongGraceSeconds.Get(), 60.0f, 240.0f);
+  return PremiumFreeMinutes() * 60.0f;
 }
 
 bool GameState::IsPremiumFreeExpired() const {
@@ -1531,8 +1530,7 @@ bool GameState::IsSongAllowedByPremiumFree(const Song* song) const {
     return false;
   }
 
-  return song->music_length_seconds_ <=
-         GetPremiumFreeSecondsLeft() + GetPremiumFreeSongGraceSeconds();
+  return song->music_length_seconds_ <= GetPremiumFreeSecondsLeft();
 }
 
 static const char* prepare_song_failures[] = {
