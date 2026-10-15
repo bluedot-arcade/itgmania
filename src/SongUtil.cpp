@@ -113,7 +113,7 @@ bool SongCriteria::Matches(const Song* pSong) const {
   }
 
   if (m_iMaxStagesForSong != -1 &&
-      GAMESTATE->GetNumStagesMultiplierForSong(pSong) > m_iMaxStagesForSong) {
+      pSong->GetStageCost() > m_iMaxStagesForSong) {
     return false;
   }
 
@@ -1283,7 +1283,7 @@ void SongUtil::GetPlayableStepsTypes(
     bool bEnoughStages =
         GAMESTATE->IsAnExtraStage() ||
         GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer() >=
-            GAMESTATE->GetNumStagesMultiplierForSong(pSong);
+            pSong->GetStageCost();
 
     if (bShowThisStepsType && bEnoughStages) {
       vOut.insert(type);

@@ -496,6 +496,12 @@ static void SongsPerPlay(int& sel, bool ToSel, const ConfOption* pConfOption) {
   MoveMap(sel, pConfOption, ToSel, mapping, ARRAYLEN(mapping));
 }
 
+static void MinutesPerStage(
+    int& sel, bool ToSel, const ConfOption* pConfOption) {
+  const int mapping[] = {3, 4, 5};
+  MoveMap(sel, pConfOption, ToSel, mapping, ARRAYLEN(mapping));
+}
+
 static void SongsPerPlayOrEventMode(
     int& sel, bool ToSel, const ConfOption* pConfOption) {
   const int mapping[] = {1, 2, 3, 4, 5, 6};
@@ -930,6 +936,7 @@ static void InitializeConfOptions() {
       "SongsPerPlayOrEvent", SongsPerPlayOrEventMode, "|1", "|2", "|3", "|4",
       "|5", "Event"));
   g_ConfOptions.back().m_sPrefName = "SongsPerPlay";
+  ADD(ConfOption("MinutesPerStage", MinutesPerStage, "|3", "|4", "|5"));
 
   ADD(ConfOption("EventMode", MovePref<bool>, "Off", "On (recommended)"));
   ADD(ConfOption(

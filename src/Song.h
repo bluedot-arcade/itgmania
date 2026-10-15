@@ -422,8 +422,9 @@ class Song {
 
   bool HasSignificantBpmChangesOrStops() const;
   float GetStepsSeconds() const;
-  bool IsLong() const;
-  bool IsMarathon() const;
+  // Every song costs one stage per started MinutesPerStage of music.
+  static int GetStageCostForSeconds(float seconds);
+  int GetStageCost() const;
 
   bool HasStepsType(StepsType st) const;
   bool HasStepsTypeAndDifficulty(StepsType st, Difficulty dc) const;

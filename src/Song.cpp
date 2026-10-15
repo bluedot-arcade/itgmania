@@ -70,9 +70,6 @@ const int FILE_CACHE_VERSION = 233;
 /** @brief How long does a song sample last by default? */
 const float DEFAULT_MUSIC_SAMPLE_LENGTH = 12.f;
 
-static Preference<float> g_fLongVerSongSeconds("LongVerSongSeconds", 60 * 2.5f);
-static Preference<float> g_fMarathonVerSongSeconds(
-    "MarathonVerSongSeconds", 60 * 5.f);
 static Preference<bool> g_BackUpAllSongSaves("BackUpAllSongSaves", false);
 
 static const char* InstrumentTrackNames[] = {
@@ -1947,12 +1944,13 @@ float Song::GetStepsSeconds() const {
   return this->GetLastSecondNoOffset() - this->GetFirstSecondNoOffset();
 }
 
-bool Song::IsLong() const {
-  return !IsMarathon() && m_fMusicLengthSeconds >= g_fLongVerSongSeconds;
+int Song::GetStageCostForSeconds(float seconds) {
+  const float stage_seconds = PREFSMAN->m_iMinutesPerStage.Get() * 60.0f;
+  return std::max(1, static_cast<int>(std::ceil(seconds / stage_seconds)));
 }
 
-bool Song::IsMarathon() const {
-  return m_fMusicLengthSeconds >= g_fMarathonVerSongSeconds;
+int Song::GetStageCost() const {
+  return GetStageCostForSeconds(m_fMusicLengthSeconds);
 }
 
 // lua start
@@ -2139,14 +2137,7 @@ class LunaSong : public Luna<Song> {
     lua_pushnumber(L, p->m_fMusicSampleLengthSeconds);
     return 1;
   }
-  static int IsLong(T* p, lua_State* L) {
-    lua_pushboolean(L, p->IsLong());
-    return 1;
-  }
-  static int IsMarathon(T* p, lua_State* L) {
-    lua_pushboolean(L, p->IsMarathon());
-    return 1;
-  }
+  DEFINE_METHOD(GetStageCost, GetStageCost())
   static int HasStepsType(T* p, lua_State* L) {
     StepsType st = Enum::Check<StepsType>(L, 1);
     lua_pushboolean(L, p->HasStepsType(st));
@@ -2357,8 +2348,7 @@ class LunaSong : public Luna<Song> {
     ADD_METHOD(MusicLengthSeconds);
     ADD_METHOD(GetSampleStart);
     ADD_METHOD(GetSampleLength);
-    ADD_METHOD(IsLong);
-    ADD_METHOD(IsMarathon);
+    ADD_METHOD(GetStageCost);
     ADD_METHOD(HasStepsType);
     ADD_METHOD(HasStepsTypeAndDifficulty);
     ADD_METHOD(GetOneSteps);
