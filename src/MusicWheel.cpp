@@ -248,7 +248,7 @@ void MusicWheel::BeginScreen() {
    * because there are not enough stages remaining. */
   if (GAMESTATE->cur_song_ != nullptr &&
       GAMESTATE->cur_song_->GetStageCost() >
-          GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer()) {
+          GAMESTATE->GetMaxStagesForSelection()) {
     GAMESTATE->cur_song_.Set(nullptr);
   }
 
@@ -281,6 +281,16 @@ MusicWheel::~MusicWheel() {
       delete *i;
     }
   }
+}
+
+void MusicWheel::RefilterSongs() {
+  FOREACH_ENUM(SortOrder, so) {
+    if (wheel_item_datas_status_[so] == VALID) {
+      wheel_item_datas_status_[so] = NEEDREFILTER;
+    }
+  }
+  SetOpenSections(expanded_parent_section_name_, expanded_section_name_);
+  RebuildWheelItems();
 }
 
 void MusicWheel::ReloadSongList() {
@@ -502,8 +512,7 @@ void MusicWheel::GetSongList(std::vector<Song*>& array_songs, SortOrder so) {
   {
     std::vector<Song*> temp_songs;
     SongCriteria sc;
-    sc.max_stages_for_song_ =
-        GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer();
+    sc.max_stages_for_song_ = GAMESTATE->GetMaxStagesForSelection();
     SongUtil::FilterSongs(sc, all_songs, temp_songs);
     all_songs = temp_songs;
   }
@@ -1303,8 +1312,7 @@ void MusicWheel::FilterWheelItemDatas(
   std::vector<bool> remove;
   remove.insert(remove.begin(), unfiltered_size, false);
 
-  const int max_stages_for_song =
-      GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer();
+  const int max_stages_for_song = GAMESTATE->GetMaxStagesForSelection();
 
   Song* extra_stage_song = nullptr;
   if (GAMESTATE->IsAnExtraStage()) {
@@ -1407,7 +1415,7 @@ void MusicWheel::FilterWheelItemDatas(
         continue;
       }
 
-      // Courses must fit the stages left; endless ones are event mode only.
+      // Courses never spend continues; endless ones are event mode only.
       if (GAMESTATE->GetNumStagesForCourse(wid.course_) >
               GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer() ||
           (wid.course_->IsEndless() && !GAMESTATE->IsEventMode())) {
@@ -2205,6 +2213,12 @@ Song* MusicWheel::GetPreferredSelectionForRandomOrPortal() {
     p_song = selection->song_;
 
     if (p_song == nullptr) {
+      continue;
+    }
+
+    // Random never picks a song that would need a continue.
+    if (p_song->GetStageCost() >
+        GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer()) {
       continue;
     }
 

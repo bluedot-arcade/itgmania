@@ -237,6 +237,7 @@ PrefsManager::PrefsManager()
       max_num_credits_("MaxNumCredits", 20),
       songs_per_play_("SongsPerPlay", 3, ValidateSongsPerPlay),
       minutes_per_stage_("MinutesPerStage", 3, ValidateMinutesPerStage),
+      allow_continue_("AllowContinue", false),
       delayed_credits_reconcile_("DelayedCreditsReconcile", false),
       combo_continues_between_songs_("ComboContinuesBetweenSongs", false),
       allow_multiple_toasties_("AllowMultipleToasties", true),

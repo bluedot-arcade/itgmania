@@ -1327,6 +1327,47 @@ int GameState::GetSmallestNumStagesLeftForAnyHumanPlayer() const {
   return smallest;
 }
 
+int GameState::GetMaxStagesForSelection() const {
+  const int stages = GetSmallestNumStagesLeftForAnyHumanPlayer();
+  if (!CanContinue()) {
+    return stages;
+  }
+  const int coins = GetCoinsNeededToContinue();
+  const int continues = coins == 0 ? 999 : coins_ / coins;
+  return stages + continues * PREFSMAN->songs_per_play_;
+}
+
+int GameState::GetCoinsNeededToContinue() const {
+  if (GetCoinMode() != CoinMode_Pay) {
+    return 0;
+  }
+  int credits = 1;
+  if (GetPremium() == Premium_Off) {
+    const Style* style = GetCurrentStyle(PLAYER_INVALID);
+    const bool is_double =
+        style != nullptr && style->style_type_ == StyleType_OnePlayerTwoSides;
+    credits = is_double ? 2 : GetNumSidesJoined();
+  } else if (GetPremium() == Premium_DoubleFor1Credit) {
+    credits = GetNumSidesJoined();
+  }
+  return credits * PREFSMAN->coins_per_credit_;
+}
+
+bool GameState::CanContinue() const {
+  return PREFSMAN->allow_continue_ && GetCoinMode() != CoinMode_Home &&
+         !IsEventMode() && coins_ >= GetCoinsNeededToContinue();
+}
+
+bool GameState::UseContinue() {
+  if (!CanContinue()) {
+    return false;
+  }
+  coins_.Set(coins_ - GetCoinsNeededToContinue());
+  BOOKKEEPER->WriteCoinsFile(coins_.Get());
+  FOREACH_HumanPlayer(p) player_stage_tokens_[p] += PREFSMAN->songs_per_play_;
+  return true;
+}
+
 bool GameState::IsFinalStageForEveryHumanPlayer() const {
   int song_cost = 1;
   if (cur_song_ != nullptr) {
@@ -3070,6 +3111,12 @@ class LunaGameState : public Luna<GameState> {
     lua_pushnumber(L, GAMESTATE->GetNumStagesForCurrentSongAndStepsOrCourse());
     return 1;
   }
+  DEFINE_METHOD(GetCoinsNeededToContinue, GetCoinsNeededToContinue())
+  DEFINE_METHOD(CanContinue, CanContinue())
+  static int UseContinue(T* p, lua_State* L) {
+    lua_pushboolean(L, p->UseContinue());
+    return 1;
+  }
   static int GetNumStagesLeft(T* p, lua_State* L) {
     PlayerNumber pn = Enum::Check<PlayerNumber>(L, 1);
     lua_pushnumber(L, p->GetNumStagesLeft(pn));
@@ -3464,6 +3511,9 @@ class LunaGameState : public Luna<GameState> {
     ADD_METHOD(IsAnyHumanPlayerUsingMemoryCard);
     ADD_METHOD(GetNumStagesForCurrentSongAndStepsOrCourse);
     ADD_METHOD(GetNumStagesLeft);
+    ADD_METHOD(GetCoinsNeededToContinue);
+    ADD_METHOD(CanContinue);
+    ADD_METHOD(UseContinue);
     ADD_METHOD(GetGameSeed);
     ADD_METHOD(GetStageSeed);
     ADD_METHOD(SaveLocalData);

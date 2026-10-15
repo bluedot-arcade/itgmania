@@ -63,6 +63,7 @@ class ScreenSelectMusic : public ScreenWithMenuElements {
 
   void OpenOptionsList(PlayerNumber pn);
   void OnConfirmSongDeletion();
+  int GetContinuesNeededForSelectedSong();
 
   bool can_open_options_list(PlayerNumber pn);
 

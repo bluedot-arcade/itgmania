@@ -83,6 +83,7 @@ AutoScreenMessage(SM_SortOrderChanged);
 AutoScreenMessage(SM_BackFromPlayerOptions);
 AutoScreenMessage(SM_ConfirmDeleteSong);
 AutoScreenMessage(SM_ConfirmExit);
+AutoScreenMessage(SM_ConfirmContinue);
 
 static std::string g_sCDTitlePath;
 static bool g_bWantFallbackCdTitle;
@@ -94,6 +95,8 @@ static RageTimer g_StartedLoadingAt(RageZeroTimer);
 static RageTimer g_ScreenStartedLoadingAt(RageZeroTimer);
 RageTimer g_CanOpenOptionsList(RageZeroTimer);
 
+static LocalizedString USE_CREDITS_FOR_SONG(
+    "ScreenSelectMusic", "UseCreditsForSong");
 static LocalizedString PERMANENTLY_DELETE(
     "ScreenSelectMusic", "PermanentlyDelete");
 static LocalizedString PROMPT_BEFORE_EXITING(
@@ -188,6 +191,7 @@ void ScreenSelectMusic::Init() {
   this->SubscribeToMessage(Message_PlayerJoined);
   this->SubscribeToMessage(Message_PlayerProfileSet);
   this->SubscribeToMessage(Message_StorageDevicesChanged);
+  this->SubscribeToMessage(Message_CoinsChanged);
 
   // Cache these values
   // Marking for change -- Midiman (why? -aj)
@@ -1128,6 +1132,14 @@ void ScreenSelectMusic::ChangeSteps(PlayerNumber pn, int dir) {
 }
 
 void ScreenSelectMusic::HandleMessage(const Message& msg) {
+  // A new credit may unlock longer songs through a continue.
+  if (running_ && msg == Message_CoinsChanged &&
+      PREFSMAN->allow_continue_ &&
+      selection_state_ == SelectionState_SelectingSong &&
+      !music_wheel_.IsRouletting()) {
+    music_wheel_.RefilterSongs();
+  }
+
   if (running_ && msg == Message_PlayerJoined) {
     PlayerNumber pn;
     bool b = msg.GetParam("Player", pn);
@@ -1249,8 +1261,10 @@ void ScreenSelectMusic::HandleScreenMessage(const ScreenMessage sm) {
       // Finish sort changing so that the wheel can respond immediately to
       // our request to choose random.
       music_wheel_.FinishChangingSorts();
-      if (music_wheel_.GetSelectedSong() == nullptr &&
-          music_wheel_.GetSelectedCourse() == nullptr) {
+      // Time is up: never spend a continue the player did not confirm.
+      if ((music_wheel_.GetSelectedSong() == nullptr &&
+           music_wheel_.GetSelectedCourse() == nullptr) ||
+          GetContinuesNeededForSelectedSong() > 0) {
         music_wheel_.StartRandom();
       }
 
@@ -1289,6 +1303,15 @@ void ScreenSelectMusic::HandleScreenMessage(const ScreenMessage sm) {
       // need to resume the song preview that was automatically paused
       music_wheel_.ChangeMusic(0);
     }
+  } else if (sm == SM_ConfirmContinue) {
+    if (ScreenPrompt::last_answer_ == ANSWER_YES) {
+      for (int i = GetContinuesNeededForSelectedSong(); i > 0; --i) {
+        GAMESTATE->UseContinue();
+      }
+      MenuStart(InputEventPlus());
+    } else {
+      music_wheel_.ChangeMusic(0);
+    }
   } else if (sm == SM_ConfirmExit) {
     if (ScreenPrompt::last_answer_ == ANSWER_YES) {
       ConfirmedCancel(SM_GoToPrevScreen);
@@ -1296,6 +1319,17 @@ void ScreenSelectMusic::HandleScreenMessage(const ScreenMessage sm) {
   }
 
   ScreenWithMenuElements::HandleScreenMessage(sm);
+}
+
+int ScreenSelectMusic::GetContinuesNeededForSelectedSong() {
+  const Song* song = music_wheel_.GetSelectedSong();
+  if (song == nullptr || GAMESTATE->IsAnExtraStage()) {
+    return 0;
+  }
+  const int missing = song->GetStageCost() -
+                      GAMESTATE->GetSmallestNumStagesLeftForAnyHumanPlayer();
+  const int per_continue = std::max(1, PREFSMAN->songs_per_play_.Get());
+  return missing > 0 ? (missing + per_continue - 1) / per_continue : 0;
 }
 
 bool ScreenSelectMusic::MenuStart(const InputEventPlus& input) {
@@ -1327,6 +1361,14 @@ bool ScreenSelectMusic::MenuStart(const InputEventPlus& input) {
 
       // a song was selected
       if (music_wheel_.GetSelectedSong() != nullptr) {
+        if (const int continues = GetContinuesNeededForSelectedSong()) {
+          ScreenPrompt::Prompt(
+              SM_ConfirmContinue,
+              ssprintf(USE_CREDITS_FOR_SONG.GetValue().c_str(), continues),
+              PROMPT_YES_NO, ANSWER_NO);
+          return false;
+        }
+
         if (TWO_PART_CONFIRMS_ONLY &&
             SAMPLE_MUSIC_PREVIEW_MODE ==
                 SampleMusicPreviewMode_StartToPreview) {
