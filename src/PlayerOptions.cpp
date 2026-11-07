@@ -149,6 +149,7 @@ void PlayerOptions::Init() {
   cosecant_ = false;
   note_skin_ = "";
   visual_delay_ = 0.0f;
+  audio_offset_ = 0.0f;
   disabled_windows_.reset();
   ZERO(moves_x_);
   ONE(speed_moves_x_);
@@ -272,6 +273,7 @@ void PlayerOptions::Approach(const PlayerOptions& other, float fDeltaSeconds) {
   DO_COPY(min_tns_to_hide_notes_);
   DO_COPY(note_skin_);
   DO_COPY(visual_delay_);
+  DO_COPY(audio_offset_);
   DO_COPY(disabled_windows_);
 #undef APPROACH
 #undef DO_COPY
@@ -725,6 +727,10 @@ void PlayerOptions::GetMods(
     // Format the string to be something like "10ms VisualDelay".
     // Note that we don't process sub-millisecond visual delay.
     add_to.push_back(ssprintf("%.0fms VisualDelay", visual_delay_ * 1000.0f));
+  }
+
+  if (std::abs(audio_offset_) > 0.0001f) {
+    add_to.push_back(ssprintf("%.0fms AudioOffset", audio_offset_ * 1000.0f));
   }
 
   if (disabled_windows_.count() != 0) {
@@ -1480,6 +1486,8 @@ bool PlayerOptions::FromOneModString(
     cosecant_ = on;
   } else if (bit == "visualdelay") {
     visual_delay_ = level;
+  } else if (bit == "audiooffset") {
+    audio_offset_ = level;
   } else if (level == 0 && disabled_windows.Compare(bit))  // "No w1" etc.
   {
     // We come into this condition if there is at least a single window present
@@ -1680,6 +1688,7 @@ bool PlayerOptions::operator==(const PlayerOptions& other) const {
     return false;
   }
   COMPARE(visual_delay_);
+  COMPARE(audio_offset_);
   COMPARE(disabled_windows_);  // != is defined correctly for ordered sets.
   for (int i = 0; i < PlayerOptions::NUM_ACCELS; ++i) {
     COMPARE(accels_[i]);
@@ -1766,6 +1775,7 @@ PlayerOptions& PlayerOptions::operator=(const PlayerOptions& other) {
   CPY(z_buffer_);
   CPY(cosecant_);
   CPY(visual_delay_);
+  CPY(audio_offset_);
   CPY(disabled_windows_);
   CPY_SPEED(dark_);
   CPY_SPEED(blind_);
@@ -2003,6 +2013,7 @@ std::string PlayerOptions::GetSavedPrefsString() const {
   SAVE(mute_on_error_);
   SAVE(note_skin_);
   SAVE(visual_delay_);
+  SAVE(audio_offset_);
   SAVE(disabled_windows_);
 #undef SAVE
   return po_prefs.GetString();
@@ -2051,6 +2062,7 @@ void PlayerOptions::ResetPrefs(ResetPrefsType type) {
   // Don't clear this.
   // CPY( m_sNoteSkin );
   CPY(visual_delay_);
+  CPY(audio_offset_);
   CPY(disabled_windows_);
 #undef CPY
 }
@@ -2413,6 +2425,7 @@ class LunaPlayerOptions : public Luna<PlayerOptions> {
   ENUM_INTERFACE(MinTNSToHideNotes, min_tns_to_hide_notes_, TapNoteScore);
 
   FLOAT_NO_SPEED_INTERFACE(VisualDelay, visual_delay_, true);
+  FLOAT_NO_SPEED_INTERFACE(AudioOffset, audio_offset_, true);
 
   static int DisableTimingWindow(T* p, lua_State* L) {
     int original_top = lua_gettop(L);
@@ -2911,6 +2924,7 @@ class LunaPlayerOptions : public Luna<PlayerOptions> {
     ADD_METHOD(FailSetting);
     ADD_METHOD(MinTNSToHideNotes);
     ADD_METHOD(VisualDelay);
+    ADD_METHOD(AudioOffset);
 
     ADD_METHOD(DisableTimingWindow);
     ADD_METHOD(ResetDisabledTimingWindows);

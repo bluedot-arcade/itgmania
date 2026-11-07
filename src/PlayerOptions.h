@@ -128,6 +128,7 @@ class PlayerOptions {
         min_tns_to_hide_notes_(PREFSMAN->min_tns_to_hide_notes_) {
     note_skin_ = "";
     visual_delay_ = 0.0f;
+    audio_offset_ = 0.0f;
     ZERO(accels_);
     ONE(speed_accels_);
     ZERO(effects_);
@@ -478,6 +479,10 @@ class PlayerOptions {
   /** @brief The Visual Delay additionally applied on a per-player basis in ms.
    */
   float visual_delay_;
+
+  /** @brief Per-player audio offset in seconds, added on top of the global
+   * offset. Shifts both note display and judgment, like the global offset. */
+  float audio_offset_;
 
   /** @brief The TimingWindow that can be disabled.
    *  Valid values are only W1-W5 which map to indices 0-5 respectively.
