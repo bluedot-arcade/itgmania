@@ -1257,6 +1257,17 @@ void GameState::ResetStageStatistics() {
   stage_seed_ = rand();
 }
 
+// Shifts the player's clock the same way the global offset shifts the chart.
+// Editing and autosync measure against the global offset alone.
+static float GetPlayerAudioOffset(const PlayerOptions& options) {
+  const SongOptions& song_options = GAMESTATE->song_options_.GetCurrent();
+  if (GAMESTATE->IsEditing() ||
+      song_options.autosync_type_ != AutosyncType_Off) {
+    return 0.0f;
+  }
+  return song_options.music_rate_ * options.audio_offset_;
+}
+
 void GameState::UpdateSongPosition(
     float position_seconds, const TimingData& timing,
     const RageTimer& timestamp) {
@@ -1278,11 +1289,11 @@ void GameState::UpdateSongPosition(
 
   FOREACH_EnabledPlayer(pn) {
     if (cur_steps_[pn]) {
-      float additional_visual_delay =
-          player_state_[pn]->player_options_.GetPreferred().visual_delay_;
+      const PlayerOptions& options =
+          player_state_[pn]->player_options_.GetPreferred();
       player_state_[pn]->position_.UpdateSongPosition(
-          position_seconds, *cur_steps_[pn]->GetTimingData(), timestamp,
-          additional_visual_delay);
+          position_seconds + GetPlayerAudioOffset(options),
+          *cur_steps_[pn]->GetTimingData(), timestamp, options.visual_delay_);
       Actor::SetPlayerBGMBeat(
           pn, player_state_[pn]->position_.song_beat_visible_,
           player_state_[pn]->position_.song_beat_no_offset_);

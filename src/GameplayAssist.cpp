@@ -31,11 +31,11 @@ void GameplayAssist::PlayTicks(const NoteData& nd, const PlayerState* ps) {
    * fPositionSeconds ahead.  This is just to make sure that we request the
    * sound early enough for it to come out on time; the actual precise timing is
    * handled by SetStartTime. */
-  SongPosition& position =
-      GAMESTATE->player_state_[ps->player_number_]->position_;
+  // The song clock, not the player's: ticks follow the music, never the
+  // player's audio offset.
+  const SongPosition& position = GAMESTATE->position_;
   float position_seconds = position.music_seconds_;
 
-  // float fPositionSeconds = GAMESTATE->m_Position.m_fMusicSeconds;
   position_seconds += SOUNDMAN->GetPlayLatency() +
                       (float)CommonMetrics::TICK_EARLY_SECONDS + 0.250f;
   const TimingData& timing =
