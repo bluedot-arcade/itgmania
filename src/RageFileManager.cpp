@@ -1245,6 +1245,14 @@ class LunaRageFileManager : public Luna<RageFileManager> {
     p->Unmount(SArg(1), SArg(2), SArg(3));
     COMMON_RETURN_SELF;
   }
+  static int Remove(T* p, lua_State* L) {
+    lua_pushboolean(L, p->Remove(SArg(1)));
+    return 1;
+  }
+  static int DeleteRecursive(T* p, lua_State* L) {
+    lua_pushboolean(L, p->DeleteRecursive(SArg(1)));
+    return 1;
+  }
   static int Unzip(T* p, lua_State* L) {
     std::string zip_path = SArg(1);
     std::string target_path = SArg(2);
@@ -1268,6 +1276,8 @@ class LunaRageFileManager : public Luna<RageFileManager> {
     ADD_METHOD(GetDirListing);
     ADD_METHOD(Mount);
     ADD_METHOD(Unmount);
+    ADD_METHOD(Remove);
+    ADD_METHOD(DeleteRecursive);
     ADD_METHOD(Unzip);
   }
 };
