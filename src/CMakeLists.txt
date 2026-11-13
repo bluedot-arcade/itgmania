@@ -382,6 +382,9 @@ else() # Linux
       message("Unrecognized host processor type")
     endif()
   endif()
+  if(${HAS_LIBXTST})
+    target_compile_definitions(itgmania_core PUBLIC HAVE_LIBXTST)
+  endif()
   if(${HAS_XINERAMA})
     target_compile_definitions(itgmania_core PUBLIC HAVE_XINERAMA)
   endif()
@@ -489,7 +492,9 @@ else() # Unix / Linux TODO: Remember to find and locate the zip archive files.
 
   list(APPEND SMDATA_LINK_LIB ${X11_LIBRARIES})
 
-  list(APPEND SMDATA_LINK_LIB ${DBUS_LIBRARIES})
+  if(Xtst_FOUND)
+    list(APPEND SMDATA_LINK_LIB ${LIBXTST_LIBRARY})
+  endif()
 
   list(APPEND SMDATA_LINK_LIB ${LIBUSB_LIBRARY})
 
@@ -516,8 +521,6 @@ else()
     list(APPEND SM_INCLUDE_DIRS "${SM_FFMPEG_INCLUDE}")
 
     list(APPEND SM_INCLUDE_DIRS "${X11_INCLUDE_DIR}")
-
-    list(APPEND SM_INCLUDE_DIRS "${DBUS_INCLUDE_DIRS}")
 
     list(APPEND SM_INCLUDE_DIRS "${LIBUSB_INCLUDE_DIR}")
   endif()

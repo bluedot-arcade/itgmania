@@ -53,5 +53,6 @@ if(LINUX)
   option(WITH_ALSA "Build with ALSA support" ON)
   option(WITH_PULSEAUDIO "Build with PulseAudio support" ON)
   option(WITH_JACK "Build with JACK support" OFF)
+  option(WITH_LIBXTST "Build with libXtst support" ON)
 endif()
 
