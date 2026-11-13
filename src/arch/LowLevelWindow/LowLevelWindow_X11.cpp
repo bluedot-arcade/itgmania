@@ -7,6 +7,7 @@
 #include "RageDisplay_OGL_Helpers.h"
 #include "RageException.h"
 #include "RageLog.h"
+#include "RageTimer.h"
 #include "archutils/Unix/X11Helper.h"
 #include "global.h"
 using namespace RageDisplay_Legacy_Helpers;
@@ -27,7 +28,9 @@ using namespace X11Helper;
 #include <X11/extensions/Xinerama.h>
 #endif
 
-#include <dbus/dbus.h>
+#if defined(HAVE_LIBXTST)
+#include <X11/extensions/XTest.h>
+#endif
 
 // Display ID for treating the entire X screen as the display
 const std::string ID_XSCREEN = "XSCREEN_RANDR";
@@ -101,8 +104,6 @@ LowLevelWindow_X11::LowLevelWindow_X11() {
 }
 
 LowLevelWindow_X11::~LowLevelWindow_X11() {
-  UninhibitScreensaver();
-
   if (FatalError) {
     return;
   }
@@ -119,121 +120,6 @@ LowLevelWindow_X11::~LowLevelWindow_X11() {
   XDestroyWindow(Dpy, Win);
   Win = None;
   CloseXConnection();
-}
-
-namespace {
-
-constexpr const char* kScreenSaverBusName = "org.freedesktop.ScreenSaver";
-constexpr const char* kScreenSaverPath = "/org/freedesktop/ScreenSaver";
-constexpr const char* kScreenSaverInterface = "org.freedesktop.ScreenSaver";
-
-bool TryInhibitScreensaver(DBusConnection* connection, uint32_t& cookie_out) {
-  DBusMessage* message = dbus_message_new_method_call(
-      kScreenSaverBusName, kScreenSaverPath, kScreenSaverInterface, "Inhibit");
-  if (message == nullptr) {
-    return false;
-  }
-
-  const char* application = "ITGmania";
-  const char* reason = "Playing";
-  dbus_message_append_args(
-      message, DBUS_TYPE_STRING, &application, DBUS_TYPE_STRING, &reason,
-      DBUS_TYPE_INVALID);
-
-  DBusError error;
-  dbus_error_init(&error);
-  DBusMessage* reply = dbus_connection_send_with_reply_and_block(
-      connection, message, 1000, &error);
-  dbus_message_unref(message);
-
-  bool success = false;
-  if (reply != nullptr) {
-    dbus_uint32_t cookie = 0;
-    success = dbus_message_get_args(
-        reply, &error, DBUS_TYPE_UINT32, &cookie, DBUS_TYPE_INVALID);
-    dbus_message_unref(reply);
-    if (success) {
-      cookie_out = cookie;
-    }
-  }
-  if (dbus_error_is_set(&error)) {
-    LOG->Warn("LowLevelWindow_X11: D-Bus error: %s", error.message);
-    dbus_error_free(&error);
-  }
-  return success;
-}
-
-}  // namespace
-
-void LowLevelWindow_X11::InhibitScreensaver() {
-  if (dbus_ != nullptr) {
-    return;
-  }
-
-  dbus_threads_init_default();
-
-  DBusError error;
-  dbus_error_init(&error);
-  DBusConnection* connection = dbus_bus_get_private(DBUS_BUS_SESSION, &error);
-  if (connection == nullptr) {
-    LOG->Warn(
-        "LowLevelWindow_X11: couldn't connect to the D-Bus session bus: %s",
-        dbus_error_is_set(&error) ? error.message : "unknown error");
-    if (dbus_error_is_set(&error)) {
-      dbus_error_free(&error);
-    }
-    return;
-  }
-  dbus_connection_set_exit_on_disconnect(connection, FALSE);
-
-  uint32_t cookie = 0;
-  if (TryInhibitScreensaver(connection, cookie)) {
-    dbus_ = connection;
-    screensaver_cookie_ = cookie;
-    LOG->Info("LowLevelWindow_X11: inhibited screensaver");
-    return;
-  }
-
-  LOG->Warn(
-      "LowLevelWindow_X11: failed to inhibit screensaver via %s",
-      kScreenSaverBusName);
-  dbus_connection_close(connection);
-  dbus_connection_unref(connection);
-}
-
-void LowLevelWindow_X11::UninhibitScreensaver() {
-  if (dbus_ == nullptr) {
-    return;
-  }
-
-  DBusMessage* message = dbus_message_new_method_call(
-      kScreenSaverBusName, kScreenSaverPath, kScreenSaverInterface,
-      "UnInhibit");
-  if (message != nullptr) {
-    dbus_uint32_t cookie = screensaver_cookie_;
-    dbus_message_append_args(
-        message, DBUS_TYPE_UINT32, &cookie, DBUS_TYPE_INVALID);
-
-    DBusError error;
-    dbus_error_init(&error);
-    DBusMessage* reply =
-        dbus_connection_send_with_reply_and_block(dbus_, message, 1000, &error);
-    if (reply != nullptr) {
-      dbus_message_unref(reply);
-    }
-    if (dbus_error_is_set(&error)) {
-      LOG->Warn(
-          "LowLevelWindow_X11: failed to uninhibit screensaver: %s",
-          error.message);
-      dbus_error_free(&error);
-    }
-    dbus_message_unref(message);
-  }
-
-  screensaver_cookie_ = 0;
-  dbus_connection_close(dbus_);
-  dbus_connection_unref(dbus_);
-  dbus_ = nullptr;
 }
 
 /*
@@ -749,10 +635,6 @@ std::string LowLevelWindow_X11::TryVideoMode(
     }
   }
 
-  if (PREFSMAN->disable_screen_saver_) {
-    InhibitScreensaver();
-  }
-
   return "";  // Success
 }
 
@@ -771,7 +653,43 @@ bool LowLevelWindow_X11::IsSoftwareRenderer(std::string& error) {
   return true;
 }
 
-void LowLevelWindow_X11::SwapBuffers() { glXSwapBuffers(Dpy, Win); }
+void LowLevelWindow_X11::SwapBuffers() {
+  glXSwapBuffers(Dpy, Win);
+
+  if (PREFSMAN->disable_screen_saver_) {
+    // Disable the screensaver.
+#if defined(HAVE_LIBXTST)
+    // This causes flicker.
+    // XForceScreenSaver( Dpy, ScreenSaverReset );
+
+    /* Instead, send a null relative mouse motion, to trick X into thinking
+     * there has been user activity.
+     *
+     * This also handles XScreenSaver; XForceScreenSaver only handles the
+     * internal X11 screen blanker.
+     *
+     * This will delay the X blanker, DPMS and XScreenSaver from activating,
+     * and will disable the blanker and XScreenSaver if they're already active
+     * (unless XSS is locked). For some reason, it doesn't un-blank DPMS if
+     * it's already active.
+     */
+
+    auto now = RageTimer::GetTimeSinceStart();
+    if ((now - last_screensaver_interrupt_) > screensaver_interrupt_interval_) {
+      last_screensaver_interrupt_ = now;
+      XLockDisplay(Dpy);
+
+      int event_base, error_base, major, minor;
+      if (XTestQueryExtension(Dpy, &event_base, &error_base, &major, &minor)) {
+        XTestFakeRelativeMotionEvent(Dpy, 0, 0, 0);
+        XSync(Dpy, False);
+      }
+
+      XUnlockDisplay(Dpy);
+    }
+#endif
+  }
+}
 
 void LowLevelWindow_X11::GetDisplaySpecs(DisplaySpecs& out) const {
   int screen_num = DefaultScreen(Dpy);
